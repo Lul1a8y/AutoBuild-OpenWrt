@@ -2,10 +2,10 @@
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
 # Updated diy-part.sh — 权威插件源 + AdGuard Home + 内核6.6
 # 插件源分工:
-#   kenzok8/openwrt-packages → luci-app + 独立服务 (adguardhome, smartdns, ddns-go 等)
-#   kenzok8/small            → 代理类 (openclash, passwall, ssr-plus, mosdns) + 核心依赖
-#   fw876/helloworld         → SSR-Plus 最新版 (官方源)
-#   vernesong/OpenClash      → OpenClash 最新版 (官方源)
+#   kenzok8/openwrt-packages → luci-app + 独立服务 (adguardhome, smartdns 等)
+#   kenzok8/small            → 代理类 (passwall, mosdns) + 核心依赖 (sing-box, xray 等)
+#   vernesong/OpenClash      → OpenClash 官方最新版
+#   fw876/helloworld         → SSR-Plus 官方最新版
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -17,28 +17,31 @@ sed -i "s/192.168.1.1/192.168.123.254/g" package/base-files/files/bin/config_gen
 sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
 
 # ===== 添加权威插件源 =====
-# kenzok8/openwrt-packages — luci应用 + 独立服务包
+# kenzok8/openwrt-packages — luci应用 + 独立服务包 (含 AdGuard Home 核心及 luci)
 git clone https://github.com/kenzok8/openwrt-packages package/kenzok8
-# kenzok8/small — 代理类插件 + 核心依赖库 (passwall, openclash, ssr-plus, mosdns 等)
+# kenzok8/small — 代理类 + 核心依赖库
 git clone https://github.com/kenzok8/small package/kenzok8-small
 
-# ===== 删除 LEDE 自带的旧版代理插件，用官方最新源替换 =====
+# ===== 删除 LEDE 自带的旧版代理插件，避免冲突 =====
 rm -rf feeds/luci/applications/luci-app-openclash
 rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
 rm -rf feeds/luci/applications/luci-app-ssr-plus
 rm -rf feeds/luci/applications/luci-app-mosdns
 
-# OpenClash 官方源 (vernesong)
-git clone -b master https://github.com/vernesong/OpenClash.git package/kenzok8/luci-app-openclash
-# PassWall 直接用 kenzok8/small 的 (同步上游 xiaorouji)
-# SSR-Plus 官方源 (fw876)
+# ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
+rm -rf package/kenzok8-small/luci-app-openclash
+rm -rf package/kenzok8-small/luci-app-ssr-plus
+
+# OpenClash 官方源 (vernesong，持续更新)
+git clone -b master https://github.com/vernesong/OpenClash.git package/openclash
+# SSR-Plus 官方源 (fw876，持续更新)
 git clone -b master https://github.com/fw876/helloworld package/helloworld
 
-# ===== AdGuard Home (kenzok8 源，持续维护) =====
-# adguardhome 核心包在 kenzok8/openwrt-packages
-# luci-app-adguardhome 在 kenzok8/openwrt-packages
-# 依赖库在 kenzok8/small
+# ===== AdGuard Home =====
+# adguardhome 核心包 → package/kenzok8/adguardhome
+# luci-app-adguardhome → package/kenzok8/luci-app-adguardhome
+# 依赖库由 kenzok8/small 提供
 
 # ===== 状态 =====
 rm -rf feeds/luci/applications/luci-app-netdata
@@ -89,25 +92,49 @@ sed -i 's/services/network/g' feeds/luci/applications/luci-app-wol/root/usr/shar
 # 统计 → 网络菜单
 sed -i 's/services/network/g' feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json 2>/dev/null || true
 
-# ===== GFW 菜单归类 =====
-# OpenClash (vernesong 官方源)
-sed -i '13a entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' package/kenzok8/luci-app-openclash/luasrc/controller/openclash.lua 2>/dev/null || true
-find package/kenzok8/luci-app-openclash -name "*.lua" -o -name "*.htm" | xargs sed -i 's/services/vpn/g' 2>/dev/null || true
+# ===== GFW 菜单归类（精确替换 controller 中的路径，避免误改） =====
 
-# PassWall (kenzok8/small)
-sed -i '13a entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' package/kenzok8-small/luci-app-passwall/luasrc/controller/passwall.lua 2>/dev/null || true
-find package/kenzok8-small/luci-app-passwall -name "*.lua" -o -name "*.htm" | xargs sed -i 's/services/vpn/g' 2>/dev/null || true
+# --- OpenClash (vernesong 官方源) ---
+OC_CTRL="package/openclash/luasrc/controller/openclash.lua"
+if [ -f "$OC_CTRL" ]; then
+  sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
+  sed -i 's/"admin", "services"/"admin", "vpn"/g' "$OC_CTRL"
+fi
 
-# SSR-Plus (fw876/helloworld)
-sed -i '12a entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' package/helloworld/luci-app-ssr-plus/luasrc/controller/shadowsocksr.lua 2>/dev/null || true
-find package/helloworld/luci-app-ssr-plus -name "*.lua" -o -name "*.htm" | xargs sed -i 's/services/vpn/g' 2>/dev/null || true
+# --- PassWall (kenzok8/small) ---
+PW_CTRL="package/kenzok8-small/luci-app-passwall/luasrc/controller/passwall.lua"
+if [ -f "$PW_CTRL" ]; then
+  sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
+  sed -i 's/"admin", "services"/"admin", "vpn"/g' "$PW_CTRL"
+fi
 
-# Zerotier
-sed -i '8d' feeds/luci/applications/luci-app-zerotier/luasrc/controller/zerotier.lua 2>/dev/null || true
-sed -i '7a entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' feeds/luci/applications/luci-app-zerotier/luasrc/controller/zerotier.lua 2>/dev/null || true
-# IPSec
-sed -i '8d' feeds/luci/applications/luci-app-ipsec-vpnd/luasrc/controller/ipsec-server.lua 2>/dev/null || true
-sed -i '7a entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' feeds/luci/applications/luci-app-ipsec-vpnd/luasrc/controller/ipsec-server.lua 2>/dev/null || true
+# --- SSR-Plus (fw876/helloworld) ---
+SSR_CTRL="package/helloworld/luci-app-ssr-plus/luasrc/controller/shadowsocksr.lua"
+if [ -f "$SSR_CTRL" ]; then
+  sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
+  sed -i 's/"admin", "services"/"admin", "vpn"/g' "$SSR_CTRL"
+fi
+
+# --- Zerotier ---
+ZT_CTRL="feeds/luci/applications/luci-app-zerotier/luasrc/controller/zerotier.lua"
+if [ -f "$ZT_CTRL" ]; then
+  sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$ZT_CTRL"
+  sed -i 's/"admin", "services"/"admin", "vpn"/g' "$ZT_CTRL"
+fi
+
+# --- IPSec ---
+IPSEC_CTRL="feeds/luci/applications/luci-app-ipsec-vpnd/luasrc/controller/ipsec-server.lua"
+if [ -f "$IPSEC_CTRL" ]; then
+  sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$IPSEC_CTRL"
+  sed -i 's/"admin", "services"/"admin", "vpn"/g' "$IPSEC_CTRL"
+fi
+
+# ===== AdGuard Home 菜单归类 → 服务 =====
+AGH_CTRL="package/kenzok8/luci-app-adguardhome/luasrc/controller/adguardhome.lua"
+if [ -f "$AGH_CTRL" ]; then
+  # AdGuard Home 保留在服务菜单，不做移动
+  true
+fi
 
 # ===== 权限修复 =====
-chmod -R 755 package/kenzok8 package/kenzok8-small package/helloworld
+chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld
