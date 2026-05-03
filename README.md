@@ -12,10 +12,10 @@
 **注意：升级不会保留原有自己安装的 app ，还需升级后自行按需安装**
 Note: The upgrade will not retain the original self-installed apps, and you will need to install them yourself after the upgrade as needed
 Default login IP address, default account, default password
-192.168.123.254 root password
+192.168.50.10 root password
 | 默认登陆IP  | 默认账号 | 默认密码 |
 | ---- | ---- | ---- |
-| 192.168.123.254 | root | password |
+| 192.168.50.10 | root | password |
 
 固件页面
 Firmware page

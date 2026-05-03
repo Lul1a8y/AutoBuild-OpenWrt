@@ -11,7 +11,7 @@
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
 
 # ===== 修改默认IP =====
-sed -i "s/192.168.1.1/192.168.123.254/g" package/base-files/files/bin/config_generate
+sed -i "s/192.168.1.1/192.168.50.10/g" package/base-files/files/bin/config_generate
 
 # ===== ttyd 终端需密码登录 =====
 sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
