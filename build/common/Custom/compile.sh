@@ -99,7 +99,7 @@ if [[ -n "$(ls -A "openwrt/config_bf" 2>/dev/null)" ]]; then
 		TIME r "没检测到openwrt文件夹有执行文件，自动转换成首次编译命令编译固件，请稍后..."
 		rm -rf {openwrt,.compile}
 		rm -rf ${firmware}
-		bash <(curl -fsSL git.io/JcGDV)
+		echo "ERROR: No valid compile config found, exiting." && exit 1
 	fi
 	if [[ ! -e openwrt/${Core} ]]; then
 		if [[ -e ${firmware}/${Core} ]]; then
@@ -371,7 +371,7 @@ elif [[ $firmware == "openwrt_amlogic" ]]; then
 	mv amlogic-s9xxx openwrt/amlogic-s9xxx
 	curl -fsSL https://raw.githubusercontent.com/ophub/amlogic-s9xxx-openwrt/main/make > openwrt/make
 	mkdir -p openwrt/openwrt-armvirt
-	chmod 777 openwrt/make
+	chmod +x openwrt/make
 	}
 	ZZZ="package/lean/default-settings/files/zzz-default-settings"
 	OpenWrt_name="18.06"
@@ -379,7 +379,7 @@ elif [[ $firmware == "openwrt_amlogic" ]]; then
 	echo -e "\nGit=$Github" >> openwrt/.amlogic_core
 fi
 if [[ "${UPCOWTRANSFER}" == "true" ]]; then
-	curl -fsSL git.io/file-transfer | sh
+	curl -fsSL https://raw.githubusercontent.com/Mikubill/transfer/master/install.sh | sh
 fi
 GITHUB_WORKSPACE="$PWD"
 Home="$PWD/openwrt"

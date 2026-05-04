@@ -125,14 +125,14 @@ Diy_Part3() {
 	case "${TARGET_PROFILE}" in
 	x86-64)
 		[[ -e ${Legacy_Firmware} ]] && {
-			MD5=$(md5sum ${Legacy_Firmware} | cut -c1-3)
-			SHA256=$(sha256sum ${Legacy_Firmware} | cut -c1-3)
+			MD5=$(md5sum ${Legacy_Firmware} | cut -c1-4)
+			SHA256=$(sha256sum ${Legacy_Firmware} | cut -c4-11)
 			SHA5BIT="${MD5}${SHA256}"
 			cp ${Legacy_Firmware} ${Home}/bin/Firmware/${AutoBuild_Firmware}-Legacy-${SHA5BIT}.${Firmware_sfx}
 		}
 		[[ -e ${UEFI_Firmware} ]] && {
-			MD5=$(md5sum ${UEFI_Firmware} | cut -c1-3)
-			SHA256=$(sha256sum ${UEFI_Firmware} | cut -c1-3)
+			MD5=$(md5sum ${UEFI_Firmware} | cut -c1-4)
+			SHA256=$(sha256sum ${UEFI_Firmware} | cut -c4-11)
 			SHA5BIT="${MD5}${SHA256}"
 			cp ${UEFI_Firmware} ${Home}/bin/Firmware/${AutoBuild_Firmware}-UEFI-${SHA5BIT}.${Firmware_sfx}
 		}
@@ -143,8 +143,8 @@ Diy_Part3() {
 	;;
 	*)
 		[[ -e ${Up_Firmware} ]] && {
-			MD5=$(md5sum ${Up_Firmware} | cut -c1-3)
-			SHA256=$(sha256sum ${Up_Firmware} | cut -c1-3)
+			MD5=$(md5sum ${Up_Firmware} | cut -c1-4)
+			SHA256=$(sha256sum ${Up_Firmware} | cut -c4-11)
 			SHA5BIT="${MD5}${SHA256}"
 			cp ${Up_Firmware} ${Home}/bin/Firmware/${AutoBuild_Firmware}-Sysupg-${SHA5BIT}.${Firmware_sfx}
 		} || {

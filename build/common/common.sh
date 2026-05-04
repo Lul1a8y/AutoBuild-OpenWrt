@@ -1,6 +1,6 @@
 #!/bin/bash
-# https://github.com/gd0772/AutoBuild-OpenWrt
-# common Module by gd772
+# https://github.com/Lul1a8y/AutoBuild-OpenWrt
+# common Module by Lul1a8y
 # matrix.target=${Modelfile}
 
 TIME() {
@@ -69,7 +69,7 @@ find . -name 'luci-app-wrtbwmon' -o -name 'wrtbwmon' | xargs -i rm -rf {}
 Diy_all() {
 
 if [[ ${REGULAR_UPDATE} == "true" ]]; then
-	git clone https://github.com/gd0772/luci-app-autoupdate feeds/luci/applications/luci-app-autoupdate
+	git clone https://github.com/281677160/luci-app-autoupdate feeds/luci/applications/luci-app-autoupdate
 	cp -Rf "${PATH1}"/{AutoUpdate.sh,replace.sh} package/base-files/files/bin
 	sed -i 's/"定时更新"/"更新固件"/g' feeds/luci/applications/luci-app-autoupdate/po/zh-cn/autoupdate.po
 	sed -i 's/定时更新 LUCI/固件更新 LUCI/g' feeds/luci/applications/luci-app-autoupdate/po/zh-cn/autoupdate.po
