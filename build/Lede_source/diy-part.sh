@@ -1,17 +1,17 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
-# Updated diy-part.sh — 权威插件源 + AdGuard Home + 内核6.6
+# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6
 # 插件源分工:
-#   kenzok8/openwrt-packages → luci-app + 独立服务 (adguardhome, smartdns 等)
-#   kenzok8/small            → 代理类 (passwall, mosdns) + 核心依赖 (sing-box, xray 等)
-#   vernesong/OpenClash      → OpenClash 官方最新版
-#   fw876/helloworld         → SSR-Plus 官方最新版
+# kenzok8/openwrt-packages → luci-app + 独立服务 (adguardhome, smartdns 等)
+# kenzok8/small → 代理类 (passwall, mosdns) + 核心依赖 (sing-box, xray 等)
+# vernesong/OpenClash → OpenClash 官方最新版
+# fw876/helloworld → SSR-Plus 官方最新版
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
 
 # ===== 修改默认IP =====
-sed -i "s/192.168.1.1/192.168.50.10/g" package/base-files/files/bin/config_generate
+sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_generate
 
 # ===== ttyd 终端需密码登录 =====
 sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
@@ -26,6 +26,7 @@ git clone https://github.com/kenzok8/small package/kenzok8-small
 rm -rf feeds/luci/applications/luci-app-openclash
 rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
+rm -rf package/kenzok8-small/luci-app-passwall2
 rm -rf feeds/luci/applications/luci-app-ssr-plus
 rm -rf feeds/luci/applications/luci-app-mosdns
 
@@ -43,6 +44,9 @@ git clone -b master https://github.com/fw876/helloworld package/helloworld
 # luci-app-adguardhome → package/kenzok8/luci-app-adguardhome
 # 依赖库由 kenzok8/small 提供
 
+# ===== 删除 kenzok8 里与 LEDE feeds 冲突的包 =====
+rm -rf package/kenzok8/luci-app-filebrowser
+
 # ===== 状态 =====
 rm -rf feeds/luci/applications/luci-app-netdata
 git clone https://github.com/sirpdboy/luci-app-netdata feeds/luci/applications/luci-app-netdata
@@ -50,6 +54,10 @@ git clone https://github.com/sirpdboy/luci-app-netdata feeds/luci/applications/l
 # ===== UI 汉化微调（保留原作者风格） =====
 # 系统
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
+# 文件管理器 → 文件传输
+sed -i 's/msgid "File Manager"/msgid "File Manager"\nmsgstr "文件传输"/g' feeds/luci/applications/luci-app-filemanager/po/zh_Hans/filemanager.po 2>/dev/null || true
+sed -i 's/msgstr "文件管理器"/msgstr "文件传输"/g' feeds/luci/applications/luci-app-filemanager/po/zh_Hans/filemanager.po 2>/dev/null || true
+
 # 服务
 sed -i 's/ShadowSocksR Plus+/SSR Plus+/g' package/helloworld/luci-app-ssr-plus/luasrc/controller/shadowsocksr.lua 2>/dev/null || true
 sed -i 's/msgstr "KMS 服务器"/msgstr "KMS 服务"/g' feeds/luci/applications/luci-app-vlmcsd/po/zh_Hans/vlmcsd.po 2>/dev/null || true
@@ -84,24 +92,29 @@ sed -i 's/services/system/g' feeds/luci/applications/luci-app-ttyd/root/usr/shar
 # 上网时间控制 → 管控菜单
 sed -i 's/services/control/g' feeds/luci/applications/luci-app-accesscontrol/luasrc/controller/mia.lua 2>/dev/null || true
 sed -i 's/services/control/g' feeds/luci/applications/luci-app-accesscontrol/luasrc/view/mia/mia_status.htm 2>/dev/null || true
-# AList → NAS 菜单
+# AList → NAS 菜单 (来自 feeds，非 kenzok8)
 sed -i 's/services/nas/g' feeds/luci/applications/luci-app-alist/root/usr/share/luci/menu.d/luci-app-alist.json 2>/dev/null || true
-# 文件管理 → NAS 菜单
-sed -i 's/services/nas/g' feeds/luci/applications/luci-app-filebrowser/root/usr/share/luci/menu.d/luci-app-filebrowser.json 2>/dev/null || true
+# 文件管理 → NAS 菜单 (LEDE feeds 版本)
+# 文件管理 → 服务菜单 (LEDE feeds 默认在 system，改到 services)
+	sed -i 's/admin\/system\/filebrowser/admin\/services\/filebrowser/g' feeds/luci/applications/luci-app-filebrowser/root/usr/share/luci/menu.d/luci-app-filebrowser.json 2>/dev/null || true
 # 网络唤醒 → 网络菜单
 sed -i 's/services/network/g' feeds/luci/applications/luci-app-wol/root/usr/share/luci/menu.d/luci-app-wol.json 2>/dev/null || true
 # 统计 → 网络菜单
 sed -i 's/services/network/g' feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json 2>/dev/null || true
 
 # ===== GFW 菜单归类 =====
+# 修改 LuCI 内置 VPN 类别名称 → GFW
+sed -i 's/"title": "VPN"/"title": "GFW"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
+sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modules/luci-base/po/zh_Hans/base.po 2>/dev/null || true
+
 # --- OpenClash → GFW 菜单 (vernesong 官方源) ---
 OC_CTRL="package/openclash/luasrc/controller/openclash.lua"
 if [ -f "$OC_CTRL" ]; then
-sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
-sed -i 's/"admin", "services"/"admin", "vpn"/g' "$OC_CTRL"
-sed -i 's/services/vpn/g' package/openclash/luasrc/controller/*.lua
-sed -i 's/services/vpn/g' package/openclash/luasrc/model/cbi/openclash/*.lua
-sed -i 's/services/vpn/g' package/openclash/luasrc/view/openclash/*.htm
+	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
+	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$OC_CTRL"
+	sed -i 's/services/vpn/g' package/openclash/luasrc/controller/*.lua
+	sed -i 's/services/vpn/g' package/openclash/luasrc/model/cbi/openclash/*.lua
+	sed -i 's/services/vpn/g' package/openclash/luasrc/view/openclash/*.htm
 fi
 
 # --- PassWall → GFW 菜单 (kenzok8/small) ---
@@ -126,49 +139,35 @@ if [ -f "$PW_CTRL" ]; then
 	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/server/*.htm
 	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/socks_auto_switch/*.htm 2>/dev/null || true
 fi
-# --- PassWall2 → GFW 菜单 (kenzok8/small) ---
-PW2_CTRL="package/kenzok8-small/luci-app-passwall2/luasrc/controller/passwall2.lua"
-if [ -f "$PW2_CTRL" ]; then
-	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW2_CTRL"
-	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$PW2_CTRL"
-	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/controller/*.lua
-	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/passwall2/*.lua
-	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/model/cbi/passwall2/*.lua
-	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/view/passwall2/*.htm 2>/dev/null || true
-fi
 
 # --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
 SSR_CTRL="package/helloworld/luci-app-ssr-plus/luasrc/controller/shadowsocksr.lua"
 if [ -f "$SSR_CTRL" ]; then
-sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
-sed -i 's/"admin", "services"/"admin", "vpn"/g' "$SSR_CTRL"
-sed -i 's/services/vpn/g' package/helloworld/luci-app-ssr-plus/luasrc/controller/*.lua
-sed -i 's/services/vpn/g' package/helloworld/luci-app-ssr-plus/luasrc/model/cbi/shadowsocksr/*.lua
-sed -i 's/services/vpn/g' package/helloworld/luci-app-ssr-plus/luasrc/view/shadowsocksr/*.htm
+	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
+	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$SSR_CTRL"
+	sed -i 's/services/vpn/g' package/helloworld/luci-app-ssr-plus/luasrc/controller/*.lua
+	sed -i 's/services/vpn/g' package/helloworld/luci-app-ssr-plus/luasrc/model/cbi/shadowsocksr/*.lua
+	sed -i 's/services/vpn/g' package/helloworld/luci-app-ssr-plus/luasrc/view/shadowsocksr/*.htm
 fi
+
+# --- MosDNS → GFW 菜单 (kenzok8/small，JS-based，使用 menu.d JSON) ---
+sed -i 's/admin\/services\/mosdns/admin\/vpn\/mosdns/g' package/kenzok8-small/luci-app-mosdns/root/usr/share/luci/menu.d/luci-app-mosdns.json 2>/dev/null || true
 
 # --- Zerotier → GFW 菜单 ---
 ZT_CTRL="feeds/luci/applications/luci-app-zerotier/luasrc/controller/zerotier.lua"
 if [ -f "$ZT_CTRL" ]; then
-sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$ZT_CTRL"
-sed -i 's/"admin", "services"/"admin", "vpn"/g' "$ZT_CTRL"
+	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$ZT_CTRL"
+	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$ZT_CTRL"
 fi
 
 # --- IPSec → GFW 菜单 ---
 IPSEC_CTRL="feeds/luci/applications/luci-app-ipsec-vpnd/luasrc/controller/ipsec-server.lua"
 if [ -f "$IPSEC_CTRL" ]; then
-sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$IPSEC_CTRL"
-sed -i 's/"admin", "services"/"admin", "vpn"/g' "$IPSEC_CTRL"
+	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$IPSEC_CTRL"
+	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$IPSEC_CTRL"
 fi
 
-# ===== AdGuard Home 菜单归类 → 服务 =====
-AGH_CTRL="package/kenzok8/luci-app-adguardhome/luasrc/controller/adguardhome.lua"
-if [ -f "$AGH_CTRL" ]; then
-  # AdGuard Home 保留在服务菜单，不做移动
-  true
-fi
+# ===== AdGuard Home 保留在服务菜单 =====
 
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld
-
-

@@ -274,7 +274,7 @@ jobs:
         echo "" >> update_log.txt
         echo "| 默认登陆IP | 默认账号 | 默认密码 | SSH端口 |" >> update_log.txt
         echo "| ---- | ---- | ---- | ---- |" >> update_log.txt
-        echo "| 192.168.50.10 | root | password | 12306 |" >> update_log.txt
+        echo "| 192.168.50.2 | root | password | 12306 |" >> update_log.txt
         echo "" >> update_log.txt
     - name: 发布固件
       if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.REPO_TOKEN

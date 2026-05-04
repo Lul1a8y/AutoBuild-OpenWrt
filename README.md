@@ -22,7 +22,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 
 | 默认登陆IP | 默认账号 | 默认密码 | SSH端口 |
 | ---- | ---- | ---- | ---- |
-| 192.168.50.10 | root | password | 12306 |
+| 192.168.50.2 | root | password | 12306 |
 
 **固件特性**
 
