@@ -107,20 +107,34 @@ fi
 # --- PassWall → GFW 菜单 (kenzok8/small) ---
 PW_CTRL="package/kenzok8-small/luci-app-passwall/luasrc/controller/passwall.lua"
 if [ -f "$PW_CTRL" ]; then
-sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
-sed -i 's/"admin", "services"/"admin", "vpn"/g' "$PW_CTRL"
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/controller/*.lua
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/model/cbi/passwall/client/*.lua
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/model/cbi/passwall/server/*.lua
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/app_update/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/auto_switch/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/global/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/haproxy/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/log/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/node_list/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/rule/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/server/*.htm
-sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/socks_auto_switch/*.htm 2>/dev/null || true
+	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
+	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$PW_CTRL"
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/controller/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/passwall/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/model/cbi/passwall/client/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/model/cbi/passwall/server/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/app_update/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/auto_switch/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/global/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/haproxy/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/log/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/node_list/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/node_config/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/node_subscribe/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/rule/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/rule_list/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/server/*.htm
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall/luasrc/view/passwall/socks_auto_switch/*.htm 2>/dev/null || true
+fi
+# --- PassWall2 → GFW 菜单 (kenzok8/small) ---
+PW2_CTRL="package/kenzok8-small/luci-app-passwall2/luasrc/controller/passwall2.lua"
+if [ -f "$PW2_CTRL" ]; then
+	sed -i '/entry({"admin", "services"}/i entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW2_CTRL"
+	sed -i 's/"admin", "services"/"admin", "vpn"/g' "$PW2_CTRL"
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/controller/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/passwall2/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/model/cbi/passwall2/*.lua
+	sed -i 's/services/vpn/g' package/kenzok8-small/luci-app-passwall2/luasrc/view/passwall2/*.htm 2>/dev/null || true
 fi
 
 # --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
