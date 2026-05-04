@@ -248,16 +248,39 @@ jobs:
         name: ${{ env.OpenWrt_name }}-${{ env.CODE }}-${{ env.TARGET_PROFILE }}-firmware-${{ env.Compile_Date }}
         path: ${{ env.FIRMWARE }}
     
-    - name: 发布信息
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true'
-      run: |
-        echo "### $(date +"%Y年%m月%d号-%H点%M分")" > update_log.txt
-        curl -fsSL https://raw.githubusercontent.com/Mikubill/transfer/master/install.sh | sh
-        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
-        echo "##### 奶牛快传：$(cat cowtransfer.log | grep https | cut -f3 -d" ")" >> update_log.txt
-        ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
-        echo "##### WETRANSFER：$(cat wetransfer.log | grep https | cut -f3 -d" ")" >> update_log.txt
-    
+- name: 发布信息
+  if: env.status == 'success' && env.UPLOAD_RELEASE == 'true'
+  run: |
+    KERNEL_VER=$(egrep -o "KERNEL_PATCHVER:=[0-9]+\.[0-9]+" openwrt/target/linux/x86/Makefile | cut -d= -f2)
+    KERNEL_FULL=$(egrep -o "LINUX_KERNEL_HASH-${KERNEL_VER}\.[0-9]+" openwrt/include/kernel-version.mk | cut -d- -f3)
+    OPENCLASH_VER=$(grep -r "OPENCLASH_VERSION" openwrt/package/openclash/luci-app-openclash/Makefile 2>/dev/null | egrep -o "[0-9]+\.[0-9]+\.[0-9]+[^']*" | head -1)
+    echo "## $(date +"%Y.%m.%d") OpenWrt x86 固件更新" > update_log.txt
+    echo "" >> update_log.txt
+    echo "- x86 固件版本：**R$(date +"%y.%m.%d")** 内核版本：**${KERNEL_FULL:-${KERNEL_VER}}**" >> update_log.txt
+    echo "- 1.软件同步到固件编译当天 OpenClash 更新至 v${OPENCLASH_VER:-latest}" >> update_log.txt
+    echo "- 2.此版本的 LuCI 为 23.05 与之前的 18.06 不兼容，不能留配置升级，建议重装重新设置" >> update_log.txt
+    echo "- **PVE虚拟** 平台 下载 **combined-efi.img** 镜像 然后在PVE下用命令 `qm importdisk 虚拟机编号 /var/lib/vz/template/iso/镜像文件.img local openwrt` 进行转换即可" >> update_log.txt
+    echo "" >> update_log.txt
+    echo "**x86 固件更新 方式：**" >> update_log.txt
+    echo "" >> update_log.txt
+    echo "1. 在**OP后台 系统--更新固件 点击 手动更新** 稍等几分钟 路由重启即可" >> update_log.txt
+    echo "2. **命令行** 或 **SSH 链接** OP **执行以下命令** 完成固件更新" >> update_log.txt
+    echo "- 执行 **`bash /bin/AutoUpdate.sh`** 保留配置更新" >> update_log.txt
+    echo "- 执行 **`bash /bin/AutoUpdate.sh -n`** 不保留配置更新" >> update_log.txt
+    echo "" >> update_log.txt
+    echo "**注意：升级不会保留原有自己安装的 app ，还需升级后自行按需安装**" >> update_log.txt
+    echo "" >> update_log.txt
+    echo "**x86 OpenWrt 固件默认信息**" >> update_log.txt
+    echo "" >> update_log.txt
+    echo "| 默认登陆IP | 默认账号 | 默认密码 | SSH端口 |" >> update_log.txt
+    echo "| ---- | ---- | ---- | ---- |" >> update_log.txt
+    echo "| 192.168.50.10 | root | password | 12306 |" >> update_log.txt
+    echo "" >> update_log.txt
+    curl -fsSL https://raw.githubusercontent.com/Mikubill/transfer/master/install.sh | sh
+    ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
+    echo "##### 奶牛快传：$(cat cowtransfer.log | grep https | cut -f3 -d" ")" >> update_log.txt
+    ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
+    echo "##### WETRANSFER：$(cat wetransfer.log | grep https | cut -f3 -d" ")" >> update_log.txt
     - name: 发布固件
       if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.REPO_TOKEN
       uses: ncipollo/release-action@v1
