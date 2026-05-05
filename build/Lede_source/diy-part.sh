@@ -16,7 +16,11 @@ git clone https://github.com/kenzok8/openwrt-packages package/kenzok8
 git clone https://github.com/kenzok8/small package/kenzok8-small
 
 # ===== 从 coolsnowwolf/luci master 分支补充 filetransfer（openwrt-25.12 分支没有此包） =====
-svn export https://github.com/coolsnowwolf/luci/branches/master/applications/luci-app-filetransfer
+_LEDE_ROOT=$(pwd)
+git clone --depth 1 --filter=blob:none --sparse https://github.com/coolsnowwolf/luci.git /tmp/luci-patch
+cd /tmp/luci-patch && git sparse-checkout set applications/luci-app-filetransfer
+cp -r applications/luci-app-filetransfer "$_LEDE_ROOT/feeds/luci/applications/"
+cd "$_LEDE_ROOT" && rm -rf /tmp/luci-patch
 
 # ===== 删除 feeds 冲突包（用权威源/官方源替换） =====
 rm -rf feeds/luci/applications/luci-app-openclash
@@ -86,7 +90,7 @@ sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modul
 # 实际包目录在 package/openclash/luci-app-openclash/ 下（多一层）
 # 使用 find 递归搜索，不怕目录层级变化
 find package/openclash -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-  -exec sed -i 's|admin/services|admin/vpn|g' {} +
+  -exec sed -i 's/services/vpn/g' {} +
 # 用 find 定位 controller 文件，避免硬编码路径错误
 OC_CTRL=$(find package/openclash -path '*/controller/openclash.lua' -print -quit 2>/dev/null)
 if [ -n "$OC_CTRL" ] && [ -f "$OC_CTRL" ]; then
@@ -96,7 +100,7 @@ fi
 # --- PassWall → GFW 菜单 (kenzok8/small) ---
 # 使用 find 递归搜索，覆盖所有子目录（包括 api.lua 的 string.format）
 find package/kenzok8-small/luci-app-passwall -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-  -exec sed -i 's|admin/services|admin/vpn|g' {} +
+  -exec sed -i 's/services/vpn/g' {} +
 # 用 find 定位 controller 文件
 PW_CTRL=$(find package/kenzok8-small -path '*/controller/passwall.lua' -print -quit 2>/dev/null)
 if [ -n "$PW_CTRL" ] && [ -f "$PW_CTRL" ]; then
@@ -105,7 +109,7 @@ fi
 
 # --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
 find package/helloworld/luci-app-ssr-plus -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-  -exec sed -i 's|admin/services|admin/vpn|g' {} +
+  -exec sed -i 's/services/vpn/g' {} +
 SSR_CTRL=$(find package/helloworld -path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
 if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
   sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
