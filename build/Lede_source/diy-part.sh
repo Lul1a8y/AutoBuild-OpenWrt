@@ -53,7 +53,6 @@ sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/bas
 # 保留在服务菜单，不做路径修改
 
 # --- 文件浏览器翻译 ---
-sed -i 's/msgstr "FileBrowser"/msgstr "文件管理"/g' feeds/luci/applications/luci-app-filebrowser/po/zh_Hans/filebrowser.po 2>/dev/null || true
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
@@ -69,7 +68,6 @@ sed -i 's|admin/services|admin/control|g' feeds/luci/applications/luci-app-acces
 sed -i 's|admin/services/openlist|admin/nas/openlist|g' feeds/luci/applications/luci-app-openlist/root/usr/share/luci/menu.d/luci-app-openlist.json 2>/dev/null || true
 
 # --- 文件浏览器 → 服务菜单 (从 NAS 移过来) ---
-sed -i 's|admin/nas/filebrowser|admin/services/filebrowser|g' feeds/luci/applications/luci-app-filebrowser/root/usr/share/luci/menu.d/luci-app-filebrowser.json 2>/dev/null || true
 
 # --- Wol → 网络菜单 ---
 sed -i 's/services/network/g' feeds/luci/applications/luci-app-wol/root/usr/share/luci/menu.d/luci-app-wol.json 2>/dev/null || true
