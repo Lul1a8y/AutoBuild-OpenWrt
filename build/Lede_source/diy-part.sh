@@ -17,10 +17,9 @@ git clone https://github.com/kenzok8/small package/kenzok8-small
 
 # ===== 从 coolsnowwolf/luci master 分支补充 filetransfer（openwrt-25.12 分支没有此包） =====
 _LEDE_ROOT=$(pwd)
-git clone --depth 1 --filter=blob:none --sparse https://github.com/coolsnowwolf/luci.git /tmp/luci-patch
-cd /tmp/luci-patch && git sparse-checkout set applications/luci-app-filetransfer
-cp -r applications/luci-app-filetransfer "$_LEDE_ROOT/feeds/luci/applications/"
-cd "$_LEDE_ROOT" && rm -rf /tmp/luci-patch
+git clone --depth 1 https://github.com/coolsnowwolf/luci.git /tmp/luci-patch
+cp -r /tmp/luci-patch/applications/luci-app-filetransfer "$_LEDE_ROOT/feeds/luci/applications/"
+rm -rf /tmp/luci-patch
 
 # ===== 删除 feeds 冲突包（用权威源/官方源替换） =====
 rm -rf feeds/luci/applications/luci-app-openclash
