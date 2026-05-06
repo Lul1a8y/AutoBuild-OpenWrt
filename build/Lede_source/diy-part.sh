@@ -26,6 +26,7 @@ rm -rf package/kenzok8-small/luci-app-passwall2
 
 # ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
 rm -rf package/kenzok8-small/luci-app-openclash
+rm -rf package/kenzok8-small/luci-app-ssr-plus
 
 # ===== 官方源 clone =====
 git clone -b master https://github.com/vernesong/OpenClash.git package/openclash
@@ -48,12 +49,56 @@ sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/bas
 # 核心: package/kenzok8/adguardhome | Luci: package/kenzok8/luci-app-adguardhome
 # 保留在服务菜单，不做路径修改
 
-# --- 文件管理器(系统菜单) → 文件传输 ---
-# 先安装 filemanager 包确保 po 文件可用，再做汉化
-./scripts/feeds install luci-app-filemanager 2>/dev/null || true
-sed -i 's/msgstr "文件管理器"/msgstr "文件传输"/g' feeds/luci/applications/luci-app-filemanager/po/zh_Hans/filemanager.po 2>/dev/null || true
-# 英文也改（用于 fallback 显示）
-sed -i 's|msgid "File Manager"|msgid "File Transfer"|g' feeds/luci/applications/luci-app-filemanager/po/templates/filemanager.pot 2>/dev/null || true
+# --- 系统菜单→文件传输（上传+安装ipk）---
+# 从 coolsnowwolf/luci master 分支获取，openwrt-25.12 已移除该包
+git clone --depth 1 -b master --single-branch https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
+cp -r /tmp/ft-luci/applications/luci-app-filetransfer package/
+rm -rf /tmp/ft-luci
+# 添加 zh_Hans 翻译（旧 po 用 zh-cn，新 luci 用 zh_Hans）
+mkdir -p package/luci-app-filetransfer/po/zh_Hans
+cat > package/luci-app-filetransfer/po/zh_Hans/filetransfer.po << 'POEOF'
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: zh_Hans\n"
+
+msgid "Choose local file:"
+msgstr "选择本地文件："
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "FileTransfer"
+msgstr "文件传输"
+
+msgid "Install"
+msgstr "安装"
+
+msgid "Install ipk file ?"
+msgstr "安装 ipk 文件？"
+
+msgid "Submit"
+msgstr "提交"
+
+msgid "Upload"
+msgstr "上传"
+
+msgid "Upload and Install ipk File"
+msgstr "上传并安装 ipk 文件"
+
+msgid "Upload File"
+msgstr "上传文件"
+
+msgid "Upload log"
+msgstr "上传日志"
+
+msgid "Uploaded Files"
+msgstr "已上传的文件"
+POEOF
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
