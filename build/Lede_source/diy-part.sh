@@ -50,9 +50,16 @@ sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/bas
 # 保留在服务菜单，不做路径修改
 
 # --- 系统菜单→文件传输（上传+安装ipk）---
-# 从 coolsnowwolf/luci master 分支获取，openwrt-25.12 已移除该包
-git clone --depth 1 -b master --single-branch https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
+# luci-app-filetransfer 在 coolsnowwolf/luci master 分支，openwrt-25.12 已移除
+# ⚠️ 必须同时获取 luci-lib-fs（filetransfer 的依赖），否则编译缺少依赖被跳过
+# 用 sparse-checkout 只取需要的目录，避免 clone 整个 475MB 仓库超时
+git clone --depth 1 --filter=blob:none --single-branch -b master \
+  https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
+cd /tmp/ft-luci
+git sparse-checkout set applications/luci-app-filetransfer libs/luci-lib-fs
+cd -
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer package/
+cp -r /tmp/ft-luci/libs/luci-lib-fs package/
 rm -rf /tmp/ft-luci
 # 添加 zh_Hans 翻译（旧 po 用 zh-cn，新 luci 用 zh_Hans）
 mkdir -p package/luci-app-filetransfer/po/zh_Hans
@@ -170,4 +177,4 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 # ===== AdGuard Home 保留在服务菜单 =====
 
 # ===== 权限修复 =====
-chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld
+chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld package/luci-app-filetransfer package/luci-lib-fs
