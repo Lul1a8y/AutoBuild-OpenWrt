@@ -5,9 +5,6 @@
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
 
-# ===== 修改默认IP =====
-sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_generate
-
 # ===== ttyd 终端需密码登录 =====
 sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
 
@@ -15,11 +12,11 @@ sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/f
 git clone https://github.com/kenzok8/openwrt-packages package/kenzok8
 git clone https://github.com/kenzok8/small package/kenzok8-small
 
-# ===== 从 coolsnowwolf/luci master 分支补充 filetransfer（openwrt-25.12 分支没有此包） =====
-_LEDE_ROOT=$(pwd)
-git clone --depth 1 https://github.com/coolsnowwolf/luci.git /tmp/luci-patch
-cp -r /tmp/luci-patch/applications/luci-app-filetransfer "$_LEDE_ROOT/feeds/luci/applications/"
-rm -rf /tmp/luci-patch
+# ===== 默认IP 192.168.50.2 =====
+sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_generate
+
+# ===== 主机名 Openwrt =====
+sed -i "s/hostname='LEDE'/hostname='Openwrt'/g" package/base-files/files/bin/config_generate
 
 # ===== 删除 feeds 冲突包（用权威源/官方源替换） =====
 rm -rf feeds/luci/applications/luci-app-openclash
@@ -51,7 +48,12 @@ sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/bas
 # 核心: package/kenzok8/adguardhome | Luci: package/kenzok8/luci-app-adguardhome
 # 保留在服务菜单，不做路径修改
 
-# --- 文件浏览器翻译 ---
+# --- 文件管理器(系统菜单) → 文件传输 ---
+# 先安装 filemanager 包确保 po 文件可用，再做汉化
+./scripts/feeds install luci-app-filemanager 2>/dev/null || true
+sed -i 's/msgstr "文件管理器"/msgstr "文件传输"/g' feeds/luci/applications/luci-app-filemanager/po/zh_Hans/filemanager.po 2>/dev/null || true
+# 英文也改（用于 fallback 显示）
+sed -i 's|msgid "File Manager"|msgid "File Transfer"|g' feeds/luci/applications/luci-app-filemanager/po/templates/filemanager.pot 2>/dev/null || true
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
@@ -82,34 +84,37 @@ sed -i 's/services/system/g' feeds/luci/applications/luci-app-ttyd/root/usr/shar
 sed -i 's/"title": "VPN"/"title": "GFW"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
 sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modules/luci-base/po/zh_Hans/base.po 2>/dev/null || true
 
+# ⚠️ 顺序：先插入 GFW 父类别 entry，再做 services→vpn 替换
+# 如果反过来，entry 插入模式 `{"admin", "services"}` 就不存在了（已被改为 vpn）
+
 # --- OpenClash → GFW 菜单 (vernesong 官方源) ---
-# 注意：vernesong/OpenClash clone 到 package/openclash/ 后，
-# 实际包目录在 package/openclash/luci-app-openclash/ 下（多一层）
-# 使用 find 递归搜索，不怕目录层级变化
-find package/openclash -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-  -exec sed -i 's/services/vpn/g' {} +
-# 用 find 定位 controller 文件，避免硬编码路径错误
 OC_CTRL=$(find package/openclash -path '*/controller/openclash.lua' -print -quit 2>/dev/null)
 if [ -n "$OC_CTRL" ] && [ -f "$OC_CTRL" ]; then
+  # 先插入 GFW 父类别
   sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
+  # 再做 services→vpn 替换
+  find package/openclash -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+    -exec sed -i 's/services/vpn/g' {} +
 fi
 
 # --- PassWall → GFW 菜单 (kenzok8/small) ---
-# 使用 find 递归搜索，覆盖所有子目录（包括 api.lua 的 string.format）
-find package/kenzok8-small/luci-app-passwall -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-  -exec sed -i 's/services/vpn/g' {} +
-# 用 find 定位 controller 文件
 PW_CTRL=$(find package/kenzok8-small -path '*/controller/passwall.lua' -print -quit 2>/dev/null)
 if [ -n "$PW_CTRL" ] && [ -f "$PW_CTRL" ]; then
+  # 先插入 GFW 父类别
   sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
+  # 再做 services→vpn 替换（覆盖 api.lua 的 string.format 等所有路径引用）
+  find package/kenzok8-small/luci-app-passwall -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+    -exec sed -i 's/services/vpn/g' {} +
 fi
 
 # --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
-find package/helloworld/luci-app-ssr-plus -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-  -exec sed -i 's/services/vpn/g' {} +
 SSR_CTRL=$(find package/helloworld -path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
 if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
+  # 先插入 GFW 父类别
   sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
+  # 再做 services→vpn 替换（覆盖 url 函数和 build_url 调用）
+  find package/helloworld/luci-app-ssr-plus -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+    -exec sed -i 's/services/vpn/g' {} +
 fi
 
 # --- MosDNS → GFW 菜单 (kenzok8/small, JS-based, 使用 menu.d JSON) ---
