@@ -58,12 +58,12 @@ git clone --depth 1 --filter=blob:none --single-branch -b master \
 cd /tmp/ft-luci
 git sparse-checkout set applications/luci-app-filetransfer libs/luci-lib-fs
 cd -
-cp -r /tmp/ft-luci/applications/luci-app-filetransfer package/
-cp -r /tmp/ft-luci/libs/luci-lib-fs package/
+cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
+cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci
 # 添加 zh_Hans 翻译（旧 po 用 zh-cn，新 luci 用 zh_Hans）
-mkdir -p package/luci-app-filetransfer/po/zh_Hans
-cat > package/luci-app-filetransfer/po/zh_Hans/filetransfer.po << 'POEOF'
+mkdir -p feeds/luci/applications/luci-app-filetransfer/po/zh_Hans
+cat > feeds/luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po << 'POEOF'
 msgid ""
 msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -177,4 +177,4 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 # ===== AdGuard Home 保留在服务菜单 =====
 
 # ===== 权限修复 =====
-chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld package/luci-app-filetransfer package/luci-lib-fs
+chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
