@@ -20,8 +20,9 @@ rm -f feeds/luci/modules/luci-mod-status/ucode/template/admin_status/index.ut
 
 # ===== 概览页微调（对齐原项目 gd0772）=====
 # 日期显示格式
-sed -i '63d' package/lean/autocore/files/x86/index.htm
-sed -i '62a\t\tlocaltime = os.date("%Y年%m月%d日") .. " " .. translate(os.date("%A")) .. " " .. os.date("%X"),' package/lean/autocore/files/x86/index.htm
+# ⚠️ 不能用 os.date("%X") — %X 中的 %> 会被模板解析器当成 Lua 块结束标签
+# 用 %H:%M:%S 等效替代，避免模板语法错误
+sed -i 's/localtime = os.date(),/localtime = os.date("%Y年%m月%d日") .. " " .. translate(os.date("%A")) .. " " .. os.date("%H:%M:%S"),/' package/lean/autocore/files/x86/index.htm
 # 固件编译日期行（跟原项目 gd0772 一致）
 sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01</td></tr>' package/lean/autocore/files/x86/index.htm
 sed -i "s/2024.01.01/$(TZ=UTC-8 date '+%Y.%m.%d')/g" package/lean/autocore/files/x86/index.htm
@@ -81,37 +82,9 @@ done
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
 
 # --- AdGuard Home ---
-# 删除 kenzok8 预设的 yaml（含预设账户/密码/规则列表），替换为最小核心配置
-# 首次启动时 AdGuard Home 会自动进入安装向导，自行设置账户和 DNS
+# 删除 kenzok8 预设的 yaml（含预设账户/密码/规则列表）
+# 不替换任何配置 — 让 AGH 核心首次启动时自动进入安装向导
 rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
-cat > package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml << 'AGHEOF'
-bind_host: 0.0.0.0
-bind_port: 3000
-language: zh-cn
-dns:
-  bind_hosts:
-    - 0.0.0.0
-  port: 5553
-  upstream_dns:
-    - 223.5.5.5
-    - 119.29.29.29
-  bootstrap_dns:
-    - 223.5.5.5
-    - 119.29.29.29
-  cache_size: 4194304
-  cache_optimistic: true
-  protection_enabled: true
-  filtering_enabled: true
-  querylog_enabled: true
-filters: []
-whitelist_filters: []
-user_rules: []
-dhcp:
-  enabled: false
-log_file: ""
-verbose: false
-schema_version: 10
-AGHEOF
 # 核心: package/kenzok8/adguardhome | Luci: package/kenzok8/luci-app-adguardhome
 # 保留在服务菜单，不做路径修改
 
