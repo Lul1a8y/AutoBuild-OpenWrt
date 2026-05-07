@@ -52,15 +52,18 @@ sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/bas
 # --- 系统菜单→文件传输（上传+安装ipk）---
 # luci-app-filetransfer 在 coolsnowwolf/luci master 分支，openwrt-25.12 已移除
 # ⚠️ 必须同时获取 luci-lib-fs（filetransfer 的依赖），否则编译缺少依赖被跳过
-# 用 sparse-checkout 只取需要的目录，避免 clone 整个 475MB 仓库超时
-git clone --depth 1 --filter=blob:none --single-branch -b master \
+# ⚠️ 必须拷贝到 feeds/luci/applications/ 而非 package/，因为 Makefile 里的
+#     `include ../../luci.mk` 是相对 feeds/luci/applications/ 的路径
+# ⚠️ 必须添加 menu.d JSON，LuCI 23.05+ 的菜单树从 menu.d 生成，缺了菜单不显示
+# ⚠️ 必须添加 ACL 权限文件，否则 rpcd 不授权页面访问
+# 不用 sparse-checkout（CI 环境经常失败），clone depth 1 后直接 cp
+git clone --depth 1 --single-branch -b master \
   https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
-cd /tmp/ft-luci
-git sparse-checkout set applications/luci-app-filetransfer libs/luci-lib-fs
-cd -
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci
+# 删除旧版 po/zh-cn（LuCI 23.05+ 用 po/zh_Hans，避免冲突）
+rm -rf feeds/luci/applications/luci-app-filetransfer/po/zh-cn
 # 添加 zh_Hans 翻译（旧 po 用 zh-cn，新 luci 用 zh_Hans）
 mkdir -p feeds/luci/applications/luci-app-filetransfer/po/zh_Hans
 cat > feeds/luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po << 'POEOF'
@@ -106,6 +109,48 @@ msgstr "上传日志"
 msgid "Uploaded Files"
 msgstr "已上传的文件"
 POEOF
+
+# --- 添加 menu.d JSON（LuCI 23.05+ 菜单树依赖 menu.d，缺了菜单不显示）---
+mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d
+cat > feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d/luci-app-filetransfer.json << 'MDEOF'
+{
+  "admin/system/filetransfer": {
+    "title": "FileTransfer",
+    "order": 89,
+    "action": {
+      "type": "view",
+      "path": "filetransfer"
+    },
+    "depends": {
+      "acl": [ "luci-app-filetransfer" ]
+    }
+  }
+}
+MDEOF
+
+# --- 添加 ACL 权限文件（rpcd 需要授权才能访问页面）---
+mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/rpcd/acl.d
+cat > feeds/luci/applications/luci-app-filetransfer/root/usr/share/rpcd/acl.d/luci-app-filetransfer.json << 'ACLEOF'
+{
+  "luci-app-filetransfer": {
+    "description": "Grant access to FileTransfer",
+    "read": {
+      "ubus": {
+        "file": [ "list", "read", "stat" ]
+      }
+    },
+    "write": {
+      "cgi-io": [ "upload", "download" ],
+      "ubus": {
+        "file": [ "list", "read", "write", "remove", "exec" ]
+      },
+      "file": {
+        "/tmp/upload": [ "list", "read", "write" ]
+      }
+    }
+  }
+}
+ACLEOF
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
