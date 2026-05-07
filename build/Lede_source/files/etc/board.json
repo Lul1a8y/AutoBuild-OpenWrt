@@ -1,0 +1,14 @@
+{
+	"model": {
+		"id": "x86-64",
+		"name": "Intel Celeron J4125 (4x i225-V 2.5G)"
+	},
+	"network": {
+		"lan": {
+			"ports": ["eth0", "eth2", "eth3"]
+		},
+		"wan": {
+			"device": "eth1"
+		}
+	}
+}
