@@ -12,44 +12,8 @@ sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/f
 git clone https://github.com/kenzok8/openwrt-packages package/kenzok8
 git clone https://github.com/kenzok8/small package/kenzok8-small
 
-# ===== 概览页修复：让 autocore 的 htm 模板生效 =====
-# LuCI 23.05+ 自带 ucode template index.ut，优先级高于 autocore 的 htm
-# 删除 index.ut 后 LuCI 回退到 htm，端口显示和字号跟原项目 gd0772 一致
-# feeds update 用 git pull --ff-only，不会恢复被 rm 的文件
-rm -f feeds/luci/modules/luci-mod-status/ucode/template/admin_status/index.ut
-
-# ===== 概览页微调（对齐原项目 gd0772）=====
-# 日期显示格式
-# ⚠️ 不能用 os.date("%X") — %X 中的 %> 会被模板解析器当成 Lua 块结束标签
-# 用 %H:%M:%S 等效替代，避免模板语法错误
-sed -i 's/localtime = os.date(),/localtime = os.date("%Y年%m月%d日") .. " " .. translate(os.date("%A")) .. " " .. os.date("%H:%M:%S"),/' package/lean/autocore/files/x86/index.htm
-# 固件编译日期行（跟原项目 gd0772 一致）
-sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01</td></tr>' package/lean/autocore/files/x86/index.htm
-sed -i "s/2024.01.01/$(TZ=UTC-8 date '+%Y.%m.%d')/g" package/lean/autocore/files/x86/index.htm
-
 # ===== 默认IP 192.168.50.2 =====
 sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_generate
-
-# ===== board.json — 概览页端口显示 =====
-# x86 设备没有预定义的端口映射，LuCI 概览 Port status 区域依赖此文件
-# 定义 4 个 i225-V 网口角色：eth0/eth2/eth3 = LAN, eth1 = WAN
-mkdir -p files/etc
-cat > files/etc/board.json << 'BJEOF'
-{
-	"model": {
-		"id": "x86-64",
-		"name": "Intel Celeron J4125 (4x i225-V 2.5G)"
-	},
-	"network": {
-		"lan": {
-			"ports": ["eth0", "eth2", "eth3"]
-		},
-		"wan": {
-			"device": "eth1"
-		}
-	}
-}
-BJEOF
 
 # ===== 主机名 Openwrt =====
 sed -i "s/hostname='LEDE'/hostname='Openwrt'/g" package/base-files/files/bin/config_generate
@@ -81,9 +45,48 @@ done
 # ===== 翻译微调 =====
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
 
+# ===== 概览页修复：让 autocore 的 htm 模板生效 =====
+# LuCI 23.05+ 自带 ucode template index.ut，优先级高于 autocore 的 htm
+# 删除 index.ut 后 LuCI 回退到 htm，端口显示和字号跟原项目 gd0772 一致
+# feeds update 用 git pull --ff-only，不会恢复被 rm 的文件
+rm -f feeds/luci/modules/luci-mod-status/ucode/template/admin_status/index.ut
+
+# ===== 概览页微调（对齐原项目 gd0772）=====
+# 日期显示格式
+# ⚠️ 不能用 os.date("%X") — %X 中的 %> 会被模板解析器当成 Lua 块结束标签
+# 用 %H:%M:%S 等效替代，避免模板语法错误
+# ⚠️ 原文件 localtime 后有两个空格，用 [[:space:]]* 适配
+sed -i 's/localtime[[:space:]]*=[[:space:]]*os\.date(),/localtime = os.date("%Y年%m月%d日") .. " " .. translate(os.date("%A")) .. " " .. os.date("%H:%M:%S"),/' package/lean/autocore/files/x86/index.htm
+
+# 固件编译日期行（跟原项目 gd0772 一致）
+sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01</td></tr>' package/lean/autocore/files/x86/index.htm
+sed -i "s/2024.01.01/$(TZ=UTC-8 date '+%Y.%m.%d')/g" package/lean/autocore/files/x86/index.htm
+
+# ===== board.json — 概览页端口显示 =====
+# x86 设备没有预定义的端口映射，LuCI 概览 Port status 区域依赖此文件
+# 定义 4 个 i225-V 网口角色：eth0/eth2/eth3 = LAN, eth1 = WAN
+mkdir -p files/etc
+cat > files/etc/board.json << 'BJEOF'
+{
+  "model": {
+    "id": "x86-64",
+    "name": "Intel Celeron J4125 (4x i225-V 2.5G)"
+  },
+  "network": {
+    "lan": {
+      "ports": ["eth0", "eth2", "eth3"]
+    },
+    "wan": {
+      "device": "eth1"
+    }
+  }
+}
+BJEOF
+
 # --- AdGuard Home ---
 # 删除 kenzok8 预设的 yaml（含预设账户/密码/规则列表）
 # 不替换任何配置 — 让 AGH 核心首次启动时自动进入安装向导
+# 用户在向导中自行设置账户和 DNS
 rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 # 核心: package/kenzok8/adguardhome | Luci: package/kenzok8/luci-app-adguardhome
 # 保留在服务菜单，不做路径修改
@@ -258,7 +261,7 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 
 # --- ZeroTier & IPSec → LEDE feeds openwrt-25.12 已在 admin/vpn/，无需修改 ---
 
-# ===== AdGuard Home 保留在服务菜单，预设yaml已在上方替换为最小配置 =====
+# ===== AdGuard Home 保留在服务菜单，预设yaml已在上方删除 =====
 
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
