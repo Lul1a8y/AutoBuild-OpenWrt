@@ -195,6 +195,16 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-openwrt-
         
+  - name: 修复缓存覆盖
+    run: |
+      cd openwrt
+      # fix: argon +@wget-any dep not found in LEDE openwrt-25.12
+      # 构建缓存恢复会覆盖 feeds update 后的 sed 修改
+      # 必须在缓存恢复之后、编译之前再次执行 sed
+      find feeds/luci package/feeds/luci -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+@wget-any //g' {} + 2>/dev/null || true
+      echo "argon Makefile dep check:"
+      grep -r 'LUCI_DEPENDS' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || echo "argon Makefile not found"
+
     - name: 下载dl库
       id: package
       run: |
