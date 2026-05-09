@@ -330,3 +330,10 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
+
+# ===== 修复 luci-theme-argon 依赖 =====
+# coolsnowwolf/luci openwrt-25.12 的 argon 主题依赖 +@wget-any
+# 但 wget-any 在 LEDE 源和 packages feed 中均不存在
+# 这导致编译时 opkg install 报错：cannot find dependency wget-any
+# 修复：去掉 wget-any 依赖（argon 主题不需要 wget 运行，背景图下载可选）
+sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
