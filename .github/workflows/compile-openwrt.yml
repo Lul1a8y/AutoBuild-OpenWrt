@@ -138,8 +138,8 @@ jobs:
         source "${PATH1}/common.sh" && Diy_all
         /bin/bash "${PATH1}/$DIY_PART_SH"
         ./scripts/feeds update -a
-# 修复 argon 主题依赖（feeds update 可能覆盖 diy-part.sh 的修改）
-sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
+        # fix: argon +@wget-any dep not found in LEDE openwrt-25.12
+        sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
         ./scripts/feeds install -a > /dev/null 2>&1
         ./scripts/feeds install -a
         mv "$PATH1/$CONFIG_FILE" .config
