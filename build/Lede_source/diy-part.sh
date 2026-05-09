@@ -45,11 +45,76 @@ done
 # ===== 翻译微调 =====
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
 
-# ===== 概览页修复：让 autocore 的 htm 模板生效 =====
-# LuCI 23.05+ 自带 ucode template index.ut，优先级高于 autocore 的 htm
-# 删除 index.ut 后 LuCI 回退到 htm，端口显示和字号跟原项目 gd0772 一致
-# feeds update 用 git pull --ff-only，不会恢复被 rm 的文件
-rm -f feeds/luci/modules/luci-mod-status/ucode/template/admin_status/index.ut
+# ===== 概览页修复：补 luci/tools/status.lua + 覆盖 htm 模板 =====
+# openwrt-25.12 的 luci-mod-status 已移除 luasrc（纯 JS/ucode 架构）
+# 但 autocore 的 index.htm 依赖 require "luci.tools.status"
+# 方案：补写 status.lua 模块 + 用 uci-defaults 脆本覆盖 index.ut → htm
+# 参考 arm 版的 090-cover-index_htm 脆本逻辑
+mkdir -p files/usr/lib/lua/luci/tools
+cat > files/usr/lib/lua/luci/tools/status.lua << 'STEOF'
+-- luci/tools/status.lua — minimal implementation for autocore htm template
+-- Provides dhcp_leases, dhcp6_leases, wifi_networks
+-- Required by autocore/files/x86/index.htm
+
+local util = require "luci.util"
+
+module("luci.tools.status", package.seeall)
+
+function dhcp_leases()
+    local fs = require "nixio.fs"
+    local leasefile = "/tmp/dhcp.leases"
+    local leases = {}
+    if not fs.access(leasefile) then return leases end
+    for line in io.lines(leasefile) do
+        local ts, mac, addr, name, id = line:match("(%S+) (%S+) (%S+) (%S+) (%S+)")
+        if ts and mac and addr then
+            leases[#leases+1] = {
+                expires = tonumber(ts) or 0,
+                macaddr = mac,
+                ipaddr = addr,
+                hostname = (name ~= "*") and name or nil,
+                duid = (id ~= "*") and id or nil
+            }
+        end
+    end
+    return leases
+end
+
+function dhcp6_leases()
+    local leases = {}
+    local f = io.open("/tmp/odhcp6c.leases", "r")
+    if not f then return leases end
+    for line in f:lines() do
+        local ts, addr, name, duid = line:match("(%S+) (%S+) (%S+) (%S+)")
+        if ts and addr then
+            leases[#leases+1] = {
+                expires = tonumber(ts) or 0,
+                ip6addr = addr,
+                hostname = (name ~= "-") and name or nil,
+                duid = (duid ~= "-") and duid or nil
+            }
+        end
+    end
+    f:close()
+    return leases
+end
+
+function wifi_networks()
+    -- x86 有线设备不需要 wifi 信息
+    return {}
+end
+STEOF
+
+# 用 uci-defaults 脆本把 autocore 的 index.htm 覆盖到 view 目录
+# 同时删除 index.ut（让 LuCI 直接用 htm）
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/90-cover-index_htm << 'UCEOF'
+#!/bin/sh
+[ -f /etc/index.htm ] && mv /etc/index.htm /usr/lib/lua/luci/view/admin_status/index.htm
+rm -f /usr/share/ucode/luci/template/admin_status/index.ut
+exit 0
+UCEOF
+chmod +x files/etc/uci-defaults/90-cover-index_htm
 
 # ===== 概览页微调（对齐原项目 gd0772）=====
 # 日期显示格式
