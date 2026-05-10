@@ -387,18 +387,3 @@ chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/hel
 # 这导致编译时 opkg install 报错：cannot find dependency wget-any
 # 修复：去掉 wget-any 依赖（argon 主题不需要 wget 运行，背景图下载可选）
 sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
-
-# ===== uhttpd 看门狗 =====
-# coolsnowwolf/lede 已知 bug: uhttpd 在 libcrypto.so.3 (OpenSSL 3.x) 中 segfault
-# procd 崩溃 6 次后放弃重启，导致后台彻底无法访问
-# 修复：加 cron 任务每 5 分钟检查 uhttpd，死了就拉起来
-mkdir -p files/etc/crontabs
-cat > files/usr/lib/cron/uhttpd-watchdog << 'WDEOF'
-#!/bin/sh
-if ! pidof uhttpd > /dev/null; then
-  /etc/init.d/uhttpd restart
-  logger -t watchdog "uhttpd was dead, restarted"
-fi
-WDEOF
-chmod +x files/usr/lib/cron/uhttpd-watchdog
-echo "*/5 * * * * /usr/lib/cron/uhttpd-watchdog" >> files/etc/crontabs/root
