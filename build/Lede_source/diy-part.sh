@@ -48,70 +48,6 @@ for dir in package/kenzok8/*/; do
   fi
 done
 
-# ===== 概览页：补 luci/tools/status.lua =====
-# openwrt-25.12 的 luci-mod-status 已移除 luasrc（纯 JS/ucode 架构）
-# 但 autocore 的 index.htm 依赖 require "luci.tools.status"
-# 补写最小化 status.lua 模块，提供 dhcp_leases/dhcp6_leases/wifi_networks
-mkdir -p files/usr/lib/lua/luci/tools
-cat > files/usr/lib/lua/luci/tools/status.lua << 'STEOF'
--- luci/tools/status.lua — minimal implementation for autocore htm template
-local util = require "luci.util"
-module("luci.tools.status", package.seeall)
-
-function dhcp_leases()
-  local fs = require "nixio.fs"
-  local leasefile = "/tmp/dhcp.leases"
-  local leases = {}
-  if not fs.access(leasefile) then return leases end
-  for line in io.lines(leasefile) do
-    local ts, mac, addr, name, id = line:match("(%S+) (%S+) (%S+) (%S+) (%S+)")
-    if ts and mac and addr then
-      leases[#leases+1] = {
-        expires = tonumber(ts) or 0,
-        macaddr = mac,
-        ipaddr = addr,
-        hostname = (name ~= "*") and name or nil,
-        duid = (id ~= "*") and id or nil
-      }
-    end
-  end
-  return leases
-end
-
-function dhcp6_leases()
-  local leases = {}
-  local f = io.open("/tmp/odhcp6c.leases", "r")
-  if not f then return leases end
-  for line in f:lines() do
-    local ts, addr, name, duid = line:match("(%S+) (%S+) (%S+) (%S+)")
-    if ts and addr then
-      leases[#leases+1] = {
-        expires = tonumber(ts) or 0,
-        ip6addr = addr,
-        hostname = (name ~= "-") and name or nil,
-        duid = (duid ~= "-") and duid or nil
-      }
-    end
-  end
-  f:close()
-  return leases
-end
-
-function wifi_networks()
-  return {}
-end
-STEOF
-
-# uci-defaults：确保 autocore 的 index.htm 覆盖到 view 目录
-mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/90-cover-index_htm << 'UCEOF'
-#!/bin/sh
-[ -f /etc/index.htm ] && mv /etc/index.htm /usr/lib/lua/luci/view/admin_status/index.htm
-rm -f /usr/share/ucode/luci/template/admin_status/index.ut
-exit 0
-UCEOF
-chmod +x files/etc/uci-defaults/90-cover-index_htm
-
 # --- AdGuard Home：删除预设 yaml ---
 rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 
@@ -296,52 +232,6 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
-
-# ===== 概览页端口：添加 br-lan 桥接角色标注 =====
-# 原版 ethinfo 只显示端口号/速度/双工，不标注哪个口属于 LAN 桥接哪个是 WAN
-# 覆写 ethinfo 脚本，为每个端口添加 role 字段 (LAN/WAN/-)
-cat > package/lean/autocore/files/x86/sbin/ethinfo << 'ETHEOF'
-#!/bin/sh
-a=$(ip address | grep ^[0-9] | awk -F: '{print $2}' | sed "s/ //g" | grep '^[e]' | grep -v "@" | grep -v "\\.")
-b=$(echo "$a" | wc -l)
-rm -f /tmp/state/ethinfo
-echo -n "[" > /tmp/state/ethinfo
-for i in $(seq 1 $b)
-do
-h=$(echo '{"name":' )
-c=$(echo "$a" | sed -n ${i}p)
-d=$(ethtool $c)
-e=$(echo "$d" | grep "Link detected" | awk -F: '{printf $2}' | sed 's/^[ \\t]*//g')
-if [ $e = yes ]; then
-l=1
-else
-l=0
-fi
-f=$(echo "$d" | grep "Speed" | awk -F: '{printf $2}' | sed 's/^[ \\t]*//g' | tr -d "Unknown!")
-[ -z "$f" ] && f=" - "
-g=$(echo "$d" | grep "Duplex" | awk -F: '{printf $2}' | sed 's/^[ \\t]*//g')
-if [ "$g" == "Full" ]; then
-x=1
-else
-x=0
-fi
-# 判断端口角色：是否在 br-lan 桥接中
-r="-"
-if [ -d "/sys/class/net/br-lan/brif/$c" ]; then
-r="LAN"
-fi
-wan_dev=$(uci -q get network.wan.device 2>/dev/null || uci -q get network.wan.ifname 2>/dev/null)
-if [ "$c" = "$wan_dev" ]; then r="WAN"; fi
-echo -n "$h \"$c\", \"status\": $l, \"speed\": \"$f\", \"duplex\": $x, \"role\": \"$r\"}," >> /tmp/state/ethinfo
-done
-sed -i 's/.$//' /tmp/state/ethinfo
-echo -n "]" >> /tmp/state/ethinfo
-cat /tmp/state/ethinfo
-ETHEOF
-chmod +x package/lean/autocore/files/x86/sbin/ethinfo
-
-# 修改 index.htm：端口名下方显示 LAN/WAN 角色标签
-sed -i 's/ports\[i\]\.name,/ports[i].name + "<br><b>" + (ports[i].role || "-") + "<\/b>",/' package/lean/autocore/files/x86/index.htm
 
 # ===== 固件编译日期（精确到时分）=====
 sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01 00:00</td></tr>' package/lean/autocore/files/x86/index.htm
