@@ -139,8 +139,8 @@ jobs:
         /bin/bash "${PATH1}/$DIY_PART_SH"
         ./scripts/feeds update -a
         # fix: argon +@wget-any dep not found in LEDE openwrt-25.12
-      find feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+@wget-any //g' {} + 2>/dev/null || true
-      find feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+wget-any //g' {} + 2>/dev/null || true
+        find feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+@wget-any //g' {} + 2>/dev/null || true
+        find feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+wget-any //g' {} + 2>/dev/null || true
         ./scripts/feeds install -a > /dev/null 2>&1
         ./scripts/feeds install -a -f
         mv "$PATH1/$CONFIG_FILE" .config
