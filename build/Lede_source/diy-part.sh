@@ -182,7 +182,7 @@ x=0
 fi
 # 判断端口角色：是否在 br-lan 桥接中
 r="-"
-if bridge link show dev $c 2>/dev/null | grep -q "br-lan"; then
+if [ -d "/sys/class/net/br-lan/brif/$c" ]; then
 r="LAN"
 fi
 wan_dev=$(uci -q get network.wan.device 2>/dev/null || uci -q get network.wan.ifname 2>/dev/null)
