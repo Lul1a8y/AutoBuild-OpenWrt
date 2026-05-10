@@ -23,6 +23,7 @@ rm -rf feeds/luci/applications/luci-app-openclash
 rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
 rm -rf feeds/luci/applications/luci-app-mosdns
+rm -rf feeds/luci/applications/luci-app-adguardhome
 rm -rf package/kenzok8-small/luci-app-passwall2
 
 # ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
