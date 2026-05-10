@@ -23,6 +23,10 @@ rm -rf feeds/luci/applications/luci-app-openclash
 rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
 rm -rf package/kenzok8-small/luci-app-passwall2
+# kenzok8 的 argon 主题/配置与 feeds/luci 冲突，且依赖不存在的 wget-any
+# feeds/luci (coolsnowwolf) 已自带 argon，删除 kenzok8 版本避免递归依赖
+rm -rf package/kenzok8/luci-theme-argon
+rm -rf package/kenzok8/luci-app-argon-config
 
 # ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
 rm -rf package/kenzok8-small/luci-app-openclash
