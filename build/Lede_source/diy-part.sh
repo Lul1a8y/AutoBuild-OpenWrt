@@ -22,15 +22,16 @@ sed -i "s/hostname='LEDE'/hostname='Openwrt'/g" package/base-files/files/bin/con
 rm -rf feeds/luci/applications/luci-app-openclash
 rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
+rm -rf feeds/luci/applications/luci-app-mosdns
 rm -rf package/kenzok8-small/luci-app-passwall2
-# kenzok8 的 argon 主题/配置与 feeds/luci 冲突，且依赖不存在的 wget-any
-# feeds/luci (coolsnowwolf) 已自带 argon，删除 kenzok8 版本避免递归依赖
-rm -rf package/kenzok8/luci-theme-argon
-rm -rf package/kenzok8/luci-app-argon-config
 
 # ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
 rm -rf package/kenzok8-small/luci-app-openclash
 rm -rf package/kenzok8-small/luci-app-ssr-plus
+# kenzok8 的 argon 主题/配置与 feeds/luci 冲突，且依赖不存在的 wget-any
+# feeds/luci (coolsnowwolf) 已自带 argon，删除 kenzok8 版本避免递归依赖
+rm -rf package/kenzok8/luci-theme-argon
+rm -rf package/kenzok8/luci-app-argon-config
 
 # ===== 官方源 clone =====
 git clone -b master https://github.com/vernesong/OpenClash.git package/openclash
@@ -46,71 +47,61 @@ for dir in package/kenzok8/*/; do
   fi
 done
 
-# ===== 翻译微调 =====
-sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
-
-# ===== 概览页修复：补 luci/tools/status.lua + 覆盖 htm 模板 =====
+# ===== 概览页：补 luci/tools/status.lua =====
 # openwrt-25.12 的 luci-mod-status 已移除 luasrc（纯 JS/ucode 架构）
 # 但 autocore 的 index.htm 依赖 require "luci.tools.status"
-# 方案：补写 status.lua 模块 + 用 uci-defaults 脆本覆盖 index.ut → htm
-# 参考 arm 版的 090-cover-index_htm 脆本逻辑
+# 补写最小化 status.lua 模块，提供 dhcp_leases/dhcp6_leases/wifi_networks
 mkdir -p files/usr/lib/lua/luci/tools
 cat > files/usr/lib/lua/luci/tools/status.lua << 'STEOF'
 -- luci/tools/status.lua — minimal implementation for autocore htm template
--- Provides dhcp_leases, dhcp6_leases, wifi_networks
--- Required by autocore/files/x86/index.htm
-
 local util = require "luci.util"
-
 module("luci.tools.status", package.seeall)
 
 function dhcp_leases()
-    local fs = require "nixio.fs"
-    local leasefile = "/tmp/dhcp.leases"
-    local leases = {}
-    if not fs.access(leasefile) then return leases end
-    for line in io.lines(leasefile) do
-        local ts, mac, addr, name, id = line:match("(%S+) (%S+) (%S+) (%S+) (%S+)")
-        if ts and mac and addr then
-            leases[#leases+1] = {
-                expires = tonumber(ts) or 0,
-                macaddr = mac,
-                ipaddr = addr,
-                hostname = (name ~= "*") and name or nil,
-                duid = (id ~= "*") and id or nil
-            }
-        end
+  local fs = require "nixio.fs"
+  local leasefile = "/tmp/dhcp.leases"
+  local leases = {}
+  if not fs.access(leasefile) then return leases end
+  for line in io.lines(leasefile) do
+    local ts, mac, addr, name, id = line:match("(%S+) (%S+) (%S+) (%S+) (%S+)")
+    if ts and mac and addr then
+      leases[#leases+1] = {
+        expires = tonumber(ts) or 0,
+        macaddr = mac,
+        ipaddr = addr,
+        hostname = (name ~= "*") and name or nil,
+        duid = (id ~= "*") and id or nil
+      }
     end
-    return leases
+  end
+  return leases
 end
 
 function dhcp6_leases()
-    local leases = {}
-    local f = io.open("/tmp/odhcp6c.leases", "r")
-    if not f then return leases end
-    for line in f:lines() do
-        local ts, addr, name, duid = line:match("(%S+) (%S+) (%S+) (%S+)")
-        if ts and addr then
-            leases[#leases+1] = {
-                expires = tonumber(ts) or 0,
-                ip6addr = addr,
-                hostname = (name ~= "-") and name or nil,
-                duid = (duid ~= "-") and duid or nil
-            }
-        end
+  local leases = {}
+  local f = io.open("/tmp/odhcp6c.leases", "r")
+  if not f then return leases end
+  for line in f:lines() do
+    local ts, addr, name, duid = line:match("(%S+) (%S+) (%S+) (%S+)")
+    if ts and addr then
+      leases[#leases+1] = {
+        expires = tonumber(ts) or 0,
+        ip6addr = addr,
+        hostname = (name ~= "-") and name or nil,
+        duid = (duid ~= "-") and duid or nil
+      }
     end
-    f:close()
-    return leases
+  end
+  f:close()
+  return leases
 end
 
 function wifi_networks()
-    -- x86 有线设备不需要 wifi 信息
-    return {}
+  return {}
 end
 STEOF
 
-# 用 uci-defaults 脆本把 autocore 的 index.htm 覆盖到 view 目录
-# 同时删除 index.ut（让 LuCI 直接用 htm）
+# uci-defaults：确保 autocore 的 index.htm 覆盖到 view 目录
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/90-cover-index_htm << 'UCEOF'
 #!/bin/sh
@@ -120,89 +111,13 @@ exit 0
 UCEOF
 chmod +x files/etc/uci-defaults/90-cover-index_htm
 
-# ===== 概览页微调（对齐原项目 gd0772）=====
-# 日期显示格式
-# ⚠️ 不能用 os.date("%X") — %X 中的 %> 会被模板解析器当成 Lua 块结束标签
-# 用 %H:%M:%S 等效替代，避免模板语法错误
-# ⚠️ 原文件 localtime 后有两个空格，用 [[:space:]]* 适配
-sed -i 's/localtime[[:space:]]*=[[:space:]]*os\.date(),/localtime = os.date("%Y年%m月%d日") .. " " .. translate(os.date("%A")) .. " " .. os.date("%H:%M:%S"),/' package/lean/autocore/files/x86/index.htm
+# --- AdGuard Home：删除预设 yaml ---
+rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 
-# 固件编译日期行（跟原项目 gd0772 一致）
-sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01 00:00</td></tr>' package/lean/autocore/files/x86/index.htm
-sed -i "s/2024.01.01 00:00/$(TZ=UTC-8 date '+%Y.%m.%d %H:%M')/g" package/lean/autocore/files/x86/index.htm
-
-# ===== board.json — 概览页端口显示 =====
-# x86 设备没有预定义的端口映射，LuCI 概览 Port status 区域依赖此文件
-# 定义 4 个 i225-V 网口角色：eth0/eth2/eth3 = LAN, eth1 = WAN
-mkdir -p files/etc
-cat > files/etc/board.json << 'BJEOF'
-{
-  "model": {
-    "id": "x86-64",
-    "name": "Intel Celeron J4125 (4x i225-V 2.5G)"
-  },
-  "network": {
-    "lan": {
-      "ports": ["eth0", "eth2", "eth3"]
-    },
-    "wan": {
-      "device": "eth1"
-    }
-  }
-}
-BJEOF
-
-# ===== 概览页端口：添加 br-lan 桥接角色标注 =====
-# 原版 ethinfo 只显示端口号/速度/双工，不标注哪个口属于 LAN 桥接哪个是 WAN
-# 直接用 cat 覆写整个 ethinfo 脚本，为每个端口添加 "role" 字段
-cat > package/lean/autocore/files/x86/sbin/ethinfo << 'ETHEOF'
-#!/bin/sh
-a=$(ip address | grep ^[0-9] | awk -F: '{print $2}' | sed "s/ //g" | grep '^[e]' | grep -v "@" | grep -v "\.")
-b=$(echo "$a" | wc -l)
-rm -f /tmp/state/ethinfo
-echo -n "[" > /tmp/state/ethinfo
-for i in $(seq 1 $b)
-do
-h=$(echo '{"name":' )
-c=$(echo "$a" | sed -n ${i}p)
-d=$(ethtool $c)
-e=$(echo "$d" | grep "Link detected" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
-if [ $e = yes ]; then
-l=1
-else
-l=0
-fi
-f=$(echo "$d" | grep "Speed" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g' | tr -d "Unknown!")
-[ -z "$f" ] && f=" - "
-g=$(echo "$d" | grep "Duplex" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
-if [ "$g" == "Full" ]; then
-x=1
-else
-x=0
-fi
-# 判断端口角色：是否在 br-lan 桥接中
-r="-"
-if [ -d "/sys/class/net/br-lan/brif/$c" ]; then
-r="LAN"
-fi
-wan_dev=$(uci -q get network.wan.device 2>/dev/null || uci -q get network.wan.ifname 2>/dev/null)
-if [ "$c" = "$wan_dev" ]; then r="WAN"; fi
-echo -n "$h \"$c\", \"status\": $l, \"speed\": \"$f\", \"duplex\": $x, \"role\": \"$r\"}," >> /tmp/state/ethinfo
-done
-sed -i 's/.$//' /tmp/state/ethinfo
-echo -n "]" >> /tmp/state/ethinfo
-cat /tmp/state/ethinfo
-ETHEOF
-chmod +x package/lean/autocore/files/x86/sbin/ethinfo
-
-# 修改 index.htm：端口名下方显示 LAN/WAN 角色标签
-sed -i 's/ports\[i\]\.name,/ports[i].name + "<br><b>" + (ports[i].role || "-") + "<\/b>",/' package/lean/autocore/files/x86/index.htm
+# ===== 翻译微调 =====
+sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
 
 # --- AdGuard Home ---
-# 删除 kenzok8 预设的 yaml（含预设账户/密码/规则列表）
-# 不替换任何配置 — 让 AGH 核心首次启动时自动进入安装向导
-# 用户在向导中自行设置账户和 DNS
-rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 # 核心: package/kenzok8/adguardhome | Luci: package/kenzok8/luci-app-adguardhome
 # 保留在服务菜单，不做路径修改
 
@@ -381,9 +296,55 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 
+# ===== 概览页端口：添加 br-lan 桥接角色标注 =====
+# 原版 ethinfo 只显示端口号/速度/双工，不标注哪个口属于 LAN 桥接哪个是 WAN
+# 覆写 ethinfo 脚本，为每个端口添加 role 字段 (LAN/WAN/-)
+cat > package/lean/autocore/files/x86/sbin/ethinfo << 'ETHEOF'
+#!/bin/sh
+a=$(ip address | grep ^[0-9] | awk -F: '{print $2}' | sed "s/ //g" | grep '^[e]' | grep -v "@" | grep -v "\\.")
+b=$(echo "$a" | wc -l)
+rm -f /tmp/state/ethinfo
+echo -n "[" > /tmp/state/ethinfo
+for i in $(seq 1 $b)
+do
+h=$(echo '{"name":' )
+c=$(echo "$a" | sed -n ${i}p)
+d=$(ethtool $c)
+e=$(echo "$d" | grep "Link detected" | awk -F: '{printf $2}' | sed 's/^[ \\t]*//g')
+if [ $e = yes ]; then
+l=1
+else
+l=0
+fi
+f=$(echo "$d" | grep "Speed" | awk -F: '{printf $2}' | sed 's/^[ \\t]*//g' | tr -d "Unknown!")
+[ -z "$f" ] && f=" - "
+g=$(echo "$d" | grep "Duplex" | awk -F: '{printf $2}' | sed 's/^[ \\t]*//g')
+if [ "$g" == "Full" ]; then
+x=1
+else
+x=0
+fi
+# 判断端口角色：是否在 br-lan 桥接中
+r="-"
+if [ -d "/sys/class/net/br-lan/brif/$c" ]; then
+r="LAN"
+fi
+wan_dev=$(uci -q get network.wan.device 2>/dev/null || uci -q get network.wan.ifname 2>/dev/null)
+if [ "$c" = "$wan_dev" ]; then r="WAN"; fi
+echo -n "$h \"$c\", \"status\": $l, \"speed\": \"$f\", \"duplex\": $x, \"role\": \"$r\"}," >> /tmp/state/ethinfo
+done
+sed -i 's/.$//' /tmp/state/ethinfo
+echo -n "]" >> /tmp/state/ethinfo
+cat /tmp/state/ethinfo
+ETHEOF
+chmod +x package/lean/autocore/files/x86/sbin/ethinfo
+
+# 修改 index.htm：端口名下方显示 LAN/WAN 角色标签
+sed -i 's/ports\[i\]\.name,/ports[i].name + "<br><b>" + (ports[i].role || "-") + "<\/b>",/' package/lean/autocore/files/x86/index.htm
+
+# ===== 固件编译日期（精确到时分）=====
+sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01 00:00</td></tr>' package/lean/autocore/files/x86/index.htm
+sed -i "s/2024.01.01 00:00/$(TZ=UTC-8 date '+%Y.%m.%d %H:%M')/g" package/lean/autocore/files/x86/index.htm
+
 # ===== 修复 luci-theme-argon 依赖 =====
-# coolsnowwolf/luci openwrt-25.12 的 argon 主题依赖 +@wget-any
-# 但 wget-any 在 LEDE 源和 packages feed 中均不存在
-# 这导致编译时 opkg install 报错：cannot find dependency wget-any
-# 修复：去掉 wget-any 依赖（argon 主题不需要 wget 运行，背景图下载可选）
 sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
