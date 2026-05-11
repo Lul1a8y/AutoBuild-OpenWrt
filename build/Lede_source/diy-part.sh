@@ -2,7 +2,7 @@
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
 # diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6
 # 更新日期: 2026-05-12
-# 修复: mosdns依赖 + 编译时间精确到时分 + 概览页br-lan接口 + 删除index.ut
+# 修复: mosdns依赖 + 编译时间精确到时分 + 概览页br-lan接口 
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -37,11 +37,12 @@ rm -rf package/kenzok8-small/luci-app-ssr-plus
 rm -rf package/kenzok8/luci-theme-argon
 rm -rf package/kenzok8/luci-app-argon-config
 
-# ===== 删除 luci-mod-status index.ut（让 autocore index.htm 生效）=====
-# LEDE openwrt-25.12 的 luci-mod-status 用 ucode template (index.ut)
-# index.ut 优先级高于 autocore 的 index.htm，会覆盖概览页
-# 导致 autocore 的 ethinfo 端口显示、编译日期等功能全部丢失
-rm -f feeds/luci/modules/luci-mod-status/ucode/template/admin_status/index.ut
+# ===== luci-mod-status 概览页说明 =====
+# LEDE openwrt-25.12 的 luci-mod-status 用 ucode template (index.ut) + JS 视图
+# .ut 优先级 > .htm，所以 autocore 的 index.htm 不会被 LuCI 使用
+# autocore index.htm 依赖 luci.tools.status（openwrt-25.12 已删除此模块）
+# 删 index.ut 会导致 LuCI 回退到 .htm → 报错，所以不要删 index.ut
+# 自定义概览页内容通过修改 JS 视图实现（在工作流 yml 中处理）
 
 # ===== 官方源 clone =====
 git clone -b master https://github.com/vernesong/OpenClash.git package/openclash
@@ -280,10 +281,10 @@ cat > target/linux/x86/base-files/etc/board.json << 'BJEOF'
 BJEOF
 
 # ===== 固件编译日期（精确到时分）=====
-# 在 Kernel Version 行之后插入，避免行号偏移问题
-# 使用 id="compiletime" 避免与 CPU usage 的 id="cpuusage" 冲突
-COMPILE_TIME=$(TZ=UTC-8 date '+%Y.%m.%d %H:%M')
-sed -i "/Kernel Version/a\\	<tr><td width=\"33%\"><%:固件编译日期%></td><td id=\"compiletime\">Lul1a8y ${COMPILE_TIME}</td></tr>" package/lean/autocore/files/x86/index.htm
-
+# openwrt-25.12 概览页用 JS 视图（index.ut + 10_system.js）
+# 修改 index.htm 无效（.ut 优先级 > .htm 且 tools.status 模块缺失）
+# 编译时间通过 yml 工作流中的 sed 插入 10_system.js 实现
+# yml 中 Compile_Date 环境变量已在 "加载设置" 步骤设置
+# 不需要在此脚本中设置 COMPILE_TIME
 # ===== 修复 luci-theme-argon 依赖 =====
 sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
