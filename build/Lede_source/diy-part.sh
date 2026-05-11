@@ -1,6 +1,8 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
 # diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6
+# 更新日期: 2026-05-12
+# 修复: mosdns依赖 + 编译时间精确到时分 + 概览页br-lan接口 + 删除index.ut
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -18,7 +20,7 @@ sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_genera
 # ===== 主机名 Openwrt =====
 sed -i "s/hostname='LEDE'/hostname='Openwrt'/g" package/base-files/files/bin/config_generate
 
-# ===== 删除 feeds 冲突包（用权威源/官方源替换） =====
+# ===== 删除 feeds 冲突包（用权威源/官方源替换）=====
 rm -rf feeds/luci/applications/luci-app-openclash
 rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
@@ -29,10 +31,17 @@ rm -rf package/kenzok8-small/luci-app-passwall2
 # ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
 rm -rf package/kenzok8-small/luci-app-openclash
 rm -rf package/kenzok8-small/luci-app-ssr-plus
+
 # kenzok8 的 argon 主题/配置与 feeds/luci 冲突，且依赖不存在的 wget-any
 # feeds/luci (coolsnowwolf) 已自带 argon，删除 kenzok8 版本避免递归依赖
 rm -rf package/kenzok8/luci-theme-argon
 rm -rf package/kenzok8/luci-app-argon-config
+
+# ===== 删除 luci-mod-status index.ut（让 autocore index.htm 生效）=====
+# LEDE openwrt-25.12 的 luci-mod-status 用 ucode template (index.ut)
+# index.ut 优先级高于 autocore 的 index.htm，会覆盖概览页
+# 导致 autocore 的 ethinfo 端口显示、编译日期等功能全部丢失
+rm -f feeds/luci/modules/luci-mod-status/ucode/template/admin_status/index.ut
 
 # ===== 官方源 clone =====
 git clone -b master https://github.com/vernesong/OpenClash.git package/openclash
@@ -48,8 +57,17 @@ for dir in package/kenzok8/*/; do
   fi
 done
 
-# --- AdGuard Home：删除预设 yaml ---
+# --- AdGuard Home：删除预设 yaml（核心和 Luci 保留原位不动）---
 rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
+
+# ===== MosDNS v5 依赖保障 =====
+# kenzok8/small 的 luci-app-mosdns v1.7.2 依赖：
+#   +mosdns +curl +v2ray-geoip +v2ray-geosite +v2dat
+# v2dat 在 feeds/packages/utils/v2dat（Go 编译）
+# v2ray-geoip/geosite 在 feeds/packages/net/（数据包）
+# x86_64 平台 v2dat 编译通常无问题，.config 已显式声明依赖
+# 注意：不能在这里替换 feeds/packages/lang/golang
+# 因为第二次 feeds update -a 会重置该目录
 
 # ===== 翻译微调 =====
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
@@ -62,7 +80,7 @@ sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/bas
 # luci-app-filetransfer 在 coolsnowwolf/luci master 分支，openwrt-25.12 已移除
 # ⚠️ 必须同时获取 luci-lib-fs（filetransfer 的依赖），否则编译缺少依赖被跳过
 # ⚠️ 必须拷贝到 feeds/luci/applications/ 而非 package/，因为 Makefile 里的
-#     `include ../../luci.mk` 是相对 feeds/luci/applications/ 的路径
+#   `include ../../luci.mk` 是相对 feeds/luci/applications/ 的路径
 # ⚠️ 必须添加 menu.d JSON，LuCI 23.05+ 的菜单树从 menu.d 生成，缺了菜单不显示
 # ⚠️ 必须添加 ACL 权限文件，否则 rpcd 不授权页面访问
 # 不用 sparse-checkout（CI 环境经常失败），clone depth 1 后直接 cp
@@ -71,8 +89,10 @@ git clone --depth 1 --single-branch -b master \
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci
+
 # 删除旧版 po/zh-cn（LuCI 23.05+ 用 po/zh_Hans，避免冲突）
 rm -rf feeds/luci/applications/luci-app-filetransfer/po/zh-cn
+
 # 添加 zh_Hans 翻译（旧 po 用 zh-cn，新 luci 用 zh_Hans）
 mkdir -p feeds/luci/applications/luci-app-filetransfer/po/zh_Hans
 cat > feeds/luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po << 'POEOF'
@@ -186,6 +206,7 @@ sed -i 's/services/network/g' feeds/luci/applications/luci-app-nlbwmon/root/usr/
 sed -i 's/services/system/g' feeds/luci/applications/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json 2>/dev/null || true
 
 # ===== GFW 菜单归类 =====
+
 # 修改 LuCI 内置 VPN 类别名称 → GFW
 sed -i 's/"title": "VPN"/"title": "GFW"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
 sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modules/luci-base/po/zh_Hans/base.po 2>/dev/null || true
@@ -233,9 +254,36 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 
+# ===== 概览页修复：board.json 定义网络拓扑 =====
+# LEDE openwrt-25.12 用 DSA 模式，br-lan 端口由 board.json 定义
+# 没有 board.json → config_generate 只把 eth0 加入 br-lan
+# 有 board.json → 系统根据 network.ports 自动配置 br-lan 包含的所有端口
+# J4125: 4x i225-V 2.5G, eth0/eth2/eth3 = LAN, eth1 = WAN
+mkdir -p target/linux/x86/base-files/etc
+cat > target/linux/x86/base-files/etc/board.json << 'BJEOF'
+{
+	"model": {
+		"id": "x86-64",
+		"name": "J4125 x86_64 Router"
+	},
+	"network": {
+		"lan": {
+			"protocol": "static",
+			"ports": [ "eth0", "eth2", "eth3" ]
+		},
+		"wan": {
+			"protocol": "dhcp",
+			"ports": [ "eth1" ]
+		}
+	}
+}
+BJEOF
+
 # ===== 固件编译日期（精确到时分）=====
-sed -i '750a <tr><td width="33%"><%:固件编译日期%></td><td id="cpuusage">Lul1a8y 2024.01.01 00:00</td></tr>' package/lean/autocore/files/x86/index.htm
-sed -i "s/2024.01.01 00:00/$(TZ=UTC-8 date '+%Y.%m.%d %H:%M')/g" package/lean/autocore/files/x86/index.htm
+# 在 Kernel Version 行之后插入，避免行号偏移问题
+# 使用 id="compiletime" 避免与 CPU usage 的 id="cpuusage" 冲突
+COMPILE_TIME=$(TZ=UTC-8 date '+%Y.%m.%d %H:%M')
+sed -i "/Kernel Version/a\\	<tr><td width=\"33%\"><%:固件编译日期%></td><td id=\"compiletime\">Lul1a8y ${COMPILE_TIME}</td></tr>" package/lean/autocore/files/x86/index.htm
 
 # ===== 修复 luci-theme-argon 依赖 =====
 sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
