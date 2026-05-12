@@ -1,8 +1,8 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
-# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6
+# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6 + 编译时间 + 网口修复
 # 更新日期: 2026-05-12
-# 修复: mosdns依赖 + 编译时间精确到时分 + 概览页br-lan接口 
+# 修复: mosdns版本锁定5.3.4-5 + AGH双init端口冲突 + 编译时间精确到时分 + 概览页br-lan接口
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -51,19 +51,56 @@ git clone -b master https://github.com/fw876/helloworld.git package/helloworld
 # ===== kenzok8/openwrt-packages 嵌套目录修复 =====
 # kenzok8 仓库有些包存在 pkg/pkg/Makefile 嵌套，编译系统会跳过
 for dir in package/kenzok8/*/; do
-  base=$(basename "$dir")
-  if [ -d "$dir/$base" ] && [ -f "$dir/$base/Makefile" ]; then
-    mv "$dir/$base"/* "$dir/" 2>/dev/null
-    rm -rf "$dir/$base"
-  fi
+    base=$(basename "$dir")
+    if [ -d "$dir/$base" ] && [ -f "$dir/$base/Makefile" ]; then
+        mv "$dir/$base"/* "$dir/" 2>/dev/null
+        rm -rf "$dir/$base"
+    fi
 done
 
-# --- AdGuard Home：删除预设 yaml（核心和 Luci 保留原位不动）---
+# ===== AdGuard Home 双 init 冲突修复 =====
+# ⚠️ 关键问题：官方 adguardhome 核心包和 kenzok8 luci-app-adguardhome 各自带了一套 init 脚本
+# 官方核心包: /etc/init.d/adguardhome (START=19, UCI=adguardhome, yaml=/etc/adguardhome/adguardhome.yaml)
+# kenzok8 luci: /etc/init.d/AdGuardHome (START=95, UCI=AdGuardHome, yaml=/etc/AdGuardHome.yaml)
+# 两套 init 同时启动 → 端口 3000 冲突 → panic 死循环
+# LuCI 改的是 AdGuardHome UCI，但先启动的 adguardhome 读自己的 yaml → 配置不生效
+# 修复：删除官方核心包的 init + defaults + UCI config，只保留 kenzok8 luci 版的一套
+
+# 删除 kenzok8 luci-app-adguardhome 自带的预置 yaml（含 admin 密码 + 过滤规则列表）
+# 不带预设配置才能走首次启动 web 向导
 rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
+
+# 清空官方核心包的 init 脚本（只保留空壳，让 procd 不报错）
+AGH_CORE_INIT="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.init' -print -quit 2>/dev/null)"
+if [ -n "$AGH_CORE_INIT" ]; then
+	cat > "$AGH_CORE_INIT" << 'AGHINIT'
+#!/bin/sh /etc/rc.common
+# Disabled: luci-app-adguardhome provides its own init at /etc/init.d/AdGuardHome
+# Running two inits causes port 3000 conflict (START=19 vs START=95)
+START=19
+USE_PROCD=1
+boot() { return 0; }
+start_service() { return 0; }
+stop_service() { return 0; }
+service_triggers() { return 0; }
+AGHINIT
+fi
+
+# 删除官方核心包的 UCI defaults（它会迁移配置，和 luci 版冲突）
+AGH_DEFAULTS="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.defaults' -print -quit 2>/dev/null)"
+if [ -n "$AGH_DEFAULTS" ]; then
+	echo '# Disabled: luci-app-adguardhome manages its own config' > "$AGH_DEFAULTS"
+fi
+
+# 删除官方核心包的 UCI config 模板（防止生成 /etc/config/adguardhome）
+AGH_UCI="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.conf' -print -quit 2>/dev/null)"
+if [ -n "$AGH_UCI" ]; then
+	echo '# Disabled: luci-app-adguardhome uses /etc/config/AdGuardHome instead' > "$AGH_UCI"
+fi
 
 # ===== MosDNS v5 依赖保障 =====
 # kenzok8/small 的 luci-app-mosdns v1.7.2 依赖：
-#   +mosdns +curl +v2ray-geoip +v2ray-geosite +v2dat
+# +mosdns +curl +v2ray-geoip +v2ray-geosite +v2dat
 # v2dat 在 feeds/packages/utils/v2dat（Go 编译）
 # v2ray-geoip/geosite 在 feeds/packages/net/（数据包）
 # x86_64 平台 v2dat 编译通常无问题，.config 已显式声明依赖
@@ -73,20 +110,168 @@ rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 # ===== 翻译微调 =====
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
 
-# --- AdGuard Home ---
-# 核心: package/kenzok8/adguardhome | Luci: package/kenzok8/luci-app-adguardhome
-# 保留在服务菜单，不做路径修改
+# ===== 菜单归类调整 =====
+
+# --- 访问控制 → 系统/管控 菜单 ---
+sed -i 's/services/control/g' feeds/luci/applications/luci-app-accesscontrol/luasrc/controller/mia.lua 2>/dev/null || true
+sed -i 's/services/control/g' feeds/luci/applications/luci-app-accesscontrol/luasrc/view/mia/mia_status.htm 2>/dev/null || true
+sed -i 's|admin/services|admin/control|g' feeds/luci/applications/luci-app-accesscontrol/root/usr/share/luci/menu.d/luci-app-accesscontrol.json 2>/dev/null || true
+
+# --- OpenList → NAS 菜单 ---
+sed -i 's|admin/services/openlist|admin/nas/openlist|g' feeds/luci/applications/luci-app-openlist/root/usr/share/luci/menu.d/luci-app-openlist.json 2>/dev/null || true
+
+# --- 文件浏览器 → 服务菜单 (从 NAS 移过来) ---
+
+# --- Wol → 网络菜单 ---
+sed -i 's/services/network/g' feeds/luci/applications/luci-app-wol/root/usr/share/luci/menu.d/luci-app-wol.json 2>/dev/null || true
+
+# --- nlbwmon → 网络菜单 ---
+sed -i 's/services/network/g' feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json 2>/dev/null || true
+
+# --- ttyd → 系统菜单 ---
+sed -i 's/services/system/g' feeds/luci/applications/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json 2>/dev/null || true
+
+# ===== GFW 菜单归类 =====
+# 修改 LuCI 内置 VPN 类别名称 → GFW
+sed -i 's/"title": "VPN"/"title": "GFW"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
+sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modules/luci-base/po/zh_Hans/base.po 2>/dev/null || true
+
+# ⚠️ 顺序：先插入 GFW 父类别 entry，再做 services→vpn 替换
+# 如果反过来，entry 插入模式 `{"admin", "services"}` 就不存在了（已被改为 vpn）
+
+# --- OpenClash → GFW 菜单 (vernesong 官方源) ---
+OC_CTRL=$(find package/openclash -path '*/controller/openclash.lua' -print -quit 2>/dev/null)
+if [ -n "$OC_CTRL" ] && [ -f "$OC_CTRL" ]; then
+	# 先插入 GFW 父类别
+	sed -i '/entry({"admin", "services"}/i\
+entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
+	# 再做 services→vpn 替换
+	find package/openclash -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+		-exec sed -i 's/services/vpn/g' {} +
+fi
+
+# --- PassWall → GFW 菜单 (kenzok8/small) ---
+PW_CTRL=$(find package/kenzok8-small -path '*/controller/passwall.lua' -print -quit 2>/dev/null)
+if [ -n "$PW_CTRL" ] && [ -f "$PW_CTRL" ]; then
+	# 先插入 GFW 父类别
+	sed -i '/entry({"admin", "services"}/i\
+entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
+	# 再做 services→vpn 替换（覆盖 api.lua 的 string.format 等所有路径引用）
+	find package/kenzok8-small/luci-app-passwall -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+		-exec sed -i 's/services/vpn/g' {} +
+fi
+
+# --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
+SSR_CTRL=$(find package/helloworld -path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
+if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
+	# 先插入 GFW 父类别
+	sed -i '/entry({"admin", "services"}/i\
+entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
+	# 再做 services→vpn 替换（覆盖 url 函数和 build_url 调用）
+	find package/helloworld/luci-app-ssr-plus -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+		-exec sed -i 's/services/vpn/g' {} +
+fi
+
+# --- MosDNS → GFW 菜单 (kenzok8/small, JS-based, 使用 menu.d JSON) ---
+sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-app-mosdns/root/usr/share/luci/menu.d/luci-app-mosdns.json 2>/dev/null || true
+
+# --- ZeroTier & IPSec → LEDE feeds openwrt-25.12 已在 admin/vpn/，无需修改 ---
+
+# ===== AdGuard Home 保留在服务菜单，预设yaml已在上方删除 =====
+
+# ===== 权限修复 =====
+chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
+
+# ===== MosDNS 版本锁定 + 启动修复 =====
+# 远端 kenzok8/small 已更新到 PKG_VERSION=5.3.4 PKG_RELEASE=5
+# 加 sed 确保版本正确（防止 kenzok8 回退或 clone 缓存问题）
+MOSDNS_MK="$(find package/kenzok8-small -path '*/mosdns/Makefile' -print -quit 2>/dev/null)"
+if [ -n "$MOSDNS_MK" ] && [ -f "$MOSDNS_MK" ]; then
+	sed -i 's/^PKG_VERSION:=.*/PKG_VERSION:=5.3.4/' "$MOSDNS_MK"
+	sed -i 's/^PKG_RELEASE:=.*/PKG_RELEASE:=5/' "$MOSDNS_MK"
+fi
+
+# mosdns init START=75 在 x86 设备上启动太早导致 DNS 重定向失败
+# 降低启动优先级: START=75 → START=99，确保网络就绪后再启动
+# 参考: https://github.com/sbwml/luci-app-mosdns/issues/253
+MOSDNS_INIT="$(find package/kenzok8-small -path '*/init.d/mosdns' -print -quit 2>/dev/null)"
+if [ -n "$MOSDNS_INIT" ] && [ -f "$MOSDNS_INIT" ]; then
+	sed -i 's/^START=75$/START=99/' "$MOSDNS_INIT"
+	# 确保默认配置文件路径为 /var/etc/mosdns.json（UCI 自动生成模式）
+	sed -i 's|^CONF=.*|CONF="/var/etc/mosdns.json"|' "$MOSDNS_INIT"
+fi
+
+# ===== 概览页修复：board.json 定义网络拓扑 =====
+# LEDE openwrt-25.12 用 DSA 模式，br-lan 端口由 board.json 定义
+# 没有 board.json → config_generate 只把 eth0 加入 br-lan
+# 有 board.json → 系统根据 network.ports 自动配置 br-lan 包含的所有端口
+# J4125: 4x i225-V 2.5G, eth0/eth2/eth3 = LAN, eth1 = WAN
+mkdir -p target/linux/x86/base-files/etc
+cat > target/linux/x86/base-files/etc/board.json << 'BJEOF'
+{
+  "model": {
+    "id": "x86-64",
+    "name": "J4125 x86_64 Router"
+  },
+  "network": {
+    "lan": {
+      "protocol": "static",
+      "ports": [
+        "eth0",
+        "eth2",
+        "eth3"
+      ]
+    },
+    "wan": {
+      "protocol": "dhcp",
+      "ports": [
+        "eth1"
+      ]
+    }
+  }
+}
+BJEOF
+
+# ===== x86 generic 板型网口注册（修复概览页端口显示）=====
+# 根因: LEDE 的 02_network 只为已知板型注册 LAN/WAN 端口，
+# x86 generic 不在列表中 → board.json 无 network.lan.ports →
+# rpc-luci getBuiltinEthernetPorts 返回空 → 15_ports.js 只显示 br-lan 不显示各网口
+# 修复: 在 02_network 尾部添加 x86 generic 默认映射
+NET_BOARD="target/linux/x86/base-files/etc/board.d/02_network"
+if [ -f "$NET_BOARD" ]; then
+	# 在 esac 之前插入 generic x86 默认配置
+	sed -i '/^esac$/i\
+\	*)\
+\		ucidef_set_interfaces_lan_wan "eth0 eth2 eth3" "eth1"\
+\		;;' "$NET_BOARD"
+fi
+
+# ===== network 配置文件修复（确保 br-lan 包含所有 LAN 口）=====
+NET_CONF="files/etc/config/network"
+if [ -f "$NET_CONF" ]; then
+	sed -i '/list ports/d' "$NET_CONF"
+	sed -i "/option name 'br-lan'/a\\tlist ports 'eth0'\n\tlist ports 'eth2'\n\tlist ports 'eth3'" "$NET_CONF"
+fi
+
+# ===== 固件编译日期（精确到时分）=====
+# openwrt-25.12 概览页用 JS 视图（index.ut + 10_system.js）
+# 编译时间通过 yml 工作流中的 sed 插入 10_system.js 实现
+# yml 中 Compile_Date 环境变量已在 "加载设置" 步骤设置
+# 不需要在此脚本中设置 COMPILE_TIME
+
+# ===== 修复 luci-theme-argon 依赖 =====
+sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
 
 # --- 系统菜单→文件传输（上传+安装ipk）---
 # luci-app-filetransfer 在 coolsnowwolf/luci master 分支，openwrt-25.12 已移除
 # ⚠️ 必须同时获取 luci-lib-fs（filetransfer 的依赖），否则编译缺少依赖被跳过
 # ⚠️ 必须拷贝到 feeds/luci/applications/ 而非 package/，因为 Makefile 里的
-#   `include ../../luci.mk` 是相对 feeds/luci/applications/ 的路径
+# `include ../../luci.mk` 是相对 feeds/luci/applications/ 的路径
 # ⚠️ 必须添加 menu.d JSON，LuCI 23.05+ 的菜单树从 menu.d 生成，缺了菜单不显示
 # ⚠️ 必须添加 ACL 权限文件，否则 rpcd 不授权页面访问
 # 不用 sparse-checkout（CI 环境经常失败），clone depth 1 后直接 cp
 git clone --depth 1 --single-branch -b master \
-  https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
+	https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci
@@ -144,17 +329,19 @@ POEOF
 mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d
 cat > feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d/luci-app-filetransfer.json << 'MDEOF'
 {
-  "admin/system/filetransfer": {
-    "title": "FileTransfer",
-    "order": 89,
-    "action": {
-      "type": "view",
-      "path": "filetransfer"
-    },
-    "depends": {
-      "acl": [ "luci-app-filetransfer" ]
-    }
-  }
+	"admin/system/filetransfer": {
+		"title": "FileTransfer",
+		"order": 89,
+		"action": {
+			"type": "view",
+			"path": "filetransfer"
+		},
+		"depends": {
+			"acl": [
+				"luci-app-filetransfer"
+			]
+		}
+	}
 }
 MDEOF
 
@@ -162,129 +349,42 @@ MDEOF
 mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/rpcd/acl.d
 cat > feeds/luci/applications/luci-app-filetransfer/root/usr/share/rpcd/acl.d/luci-app-filetransfer.json << 'ACLEOF'
 {
-  "luci-app-filetransfer": {
-    "description": "Grant access to FileTransfer",
-    "read": {
-      "ubus": {
-        "file": [ "list", "read", "stat" ]
-      }
-    },
-    "write": {
-      "cgi-io": [ "upload", "download" ],
-      "ubus": {
-        "file": [ "list", "read", "write", "remove", "exec" ]
-      },
-      "file": {
-        "/tmp/upload": [ "list", "read", "write" ]
-      }
-    }
-  }
+	"luci-app-filetransfer": {
+		"description": "Grant access to FileTransfer",
+		"read": {
+			"ubus": {
+				"file": [
+					"list",
+					"read",
+					"stat"
+				]
+			}
+		},
+		"write": {
+			"cgi-io": [
+				"upload",
+				"download"
+			],
+			"ubus": {
+				"file": [
+					"list",
+					"read",
+					"write",
+					"remove",
+					"exec"
+				]
+			},
+			"file": {
+				"/tmp/upload": [
+					"list",
+					"read",
+					"write"
+				]
+			}
+		}
+	}
 }
 ACLEOF
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
-
-# ===== 菜单归类调整 =====
-
-# --- 访问控制 → 系统/管控 菜单 ---
-sed -i 's/services/control/g' feeds/luci/applications/luci-app-accesscontrol/luasrc/controller/mia.lua 2>/dev/null || true
-sed -i 's/services/control/g' feeds/luci/applications/luci-app-accesscontrol/luasrc/view/mia/mia_status.htm 2>/dev/null || true
-sed -i 's|admin/services|admin/control|g' feeds/luci/applications/luci-app-accesscontrol/root/usr/share/luci/menu.d/luci-app-accesscontrol.json 2>/dev/null || true
-
-# --- OpenList → NAS 菜单 ---
-sed -i 's|admin/services/openlist|admin/nas/openlist|g' feeds/luci/applications/luci-app-openlist/root/usr/share/luci/menu.d/luci-app-openlist.json 2>/dev/null || true
-
-# --- 文件浏览器 → 服务菜单 (从 NAS 移过来) ---
-
-# --- Wol → 网络菜单 ---
-sed -i 's/services/network/g' feeds/luci/applications/luci-app-wol/root/usr/share/luci/menu.d/luci-app-wol.json 2>/dev/null || true
-
-# --- nlbwmon → 网络菜单 ---
-sed -i 's/services/network/g' feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json 2>/dev/null || true
-
-# --- ttyd → 系统菜单 ---
-sed -i 's/services/system/g' feeds/luci/applications/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json 2>/dev/null || true
-
-# ===== GFW 菜单归类 =====
-
-# 修改 LuCI 内置 VPN 类别名称 → GFW
-sed -i 's/"title": "VPN"/"title": "GFW"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
-sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modules/luci-base/po/zh_Hans/base.po 2>/dev/null || true
-
-# ⚠️ 顺序：先插入 GFW 父类别 entry，再做 services→vpn 替换
-# 如果反过来，entry 插入模式 `{"admin", "services"}` 就不存在了（已被改为 vpn）
-
-# --- OpenClash → GFW 菜单 (vernesong 官方源) ---
-OC_CTRL=$(find package/openclash -path '*/controller/openclash.lua' -print -quit 2>/dev/null)
-if [ -n "$OC_CTRL" ] && [ -f "$OC_CTRL" ]; then
-  # 先插入 GFW 父类别
-  sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
-  # 再做 services→vpn 替换
-  find package/openclash -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-    -exec sed -i 's/services/vpn/g' {} +
-fi
-
-# --- PassWall → GFW 菜单 (kenzok8/small) ---
-PW_CTRL=$(find package/kenzok8-small -path '*/controller/passwall.lua' -print -quit 2>/dev/null)
-if [ -n "$PW_CTRL" ] && [ -f "$PW_CTRL" ]; then
-  # 先插入 GFW 父类别
-  sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
-  # 再做 services→vpn 替换（覆盖 api.lua 的 string.format 等所有路径引用）
-  find package/kenzok8-small/luci-app-passwall -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-    -exec sed -i 's/services/vpn/g' {} +
-fi
-
-# --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
-SSR_CTRL=$(find package/helloworld -path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
-if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
-  # 先插入 GFW 父类别
-  sed -i '/entry({"admin", "services"}/i\	entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
-  # 再做 services→vpn 替换（覆盖 url 函数和 build_url 调用）
-  find package/helloworld/luci-app-ssr-plus -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-    -exec sed -i 's/services/vpn/g' {} +
-fi
-
-# --- MosDNS → GFW 菜单 (kenzok8/small, JS-based, 使用 menu.d JSON) ---
-sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-app-mosdns/root/usr/share/luci/menu.d/luci-app-mosdns.json 2>/dev/null || true
-
-# --- ZeroTier & IPSec → LEDE feeds openwrt-25.12 已在 admin/vpn/，无需修改 ---
-
-# ===== AdGuard Home 保留在服务菜单，预设yaml已在上方删除 =====
-
-# ===== 权限修复 =====
-chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
-
-# ===== 概览页修复：board.json 定义网络拓扑 =====
-# LEDE openwrt-25.12 用 DSA 模式，br-lan 端口由 board.json 定义
-# 没有 board.json → config_generate 只把 eth0 加入 br-lan
-# 有 board.json → 系统根据 network.ports 自动配置 br-lan 包含的所有端口
-# J4125: 4x i225-V 2.5G, eth0/eth2/eth3 = LAN, eth1 = WAN
-mkdir -p target/linux/x86/base-files/etc
-cat > target/linux/x86/base-files/etc/board.json << 'BJEOF'
-{
-	"model": {
-		"id": "x86-64",
-		"name": "J4125 x86_64 Router"
-	},
-	"network": {
-		"lan": {
-			"protocol": "static",
-			"ports": [ "eth0", "eth2", "eth3" ]
-		},
-		"wan": {
-			"protocol": "dhcp",
-			"ports": [ "eth1" ]
-		}
-	}
-}
-BJEOF
-
-# ===== 固件编译日期（精确到时分）=====
-# openwrt-25.12 概览页用 JS 视图（index.ut + 10_system.js）
-# 修改 index.htm 无效（.ut 优先级 > .htm 且 tools.status 模块缺失）
-# 编译时间通过 yml 工作流中的 sed 插入 10_system.js 实现
-# yml 中 Compile_Date 环境变量已在 "加载设置" 步骤设置
-# 不需要在此脚本中设置 COMPILE_TIME
-# ===== 修复 luci-theme-argon 依赖 =====
-sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || true
