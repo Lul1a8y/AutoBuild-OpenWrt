@@ -232,26 +232,12 @@ cat > target/linux/x86/base-files/etc/board.json << 'BJEOF'
 }
 BJEOF
 
-# ===== x86 generic 板型网口注册（修复概览页端口显示）=====
-# 根因: LEDE 的 02_network 只为已知板型注册 LAN/WAN 端口，
-# x86 generic 不在列表中 → board.json 无 network.lan.ports →
-# rpc-luci getBuiltinEthernetPorts 返回空 → 15_ports.js 只显示 br-lan 不显示各网口
-# 修复: 在 02_network 尾部添加 x86 generic 默认映射
-NET_BOARD="target/linux/x86/base-files/etc/board.d/02_network"
-if [ -f "$NET_BOARD" ]; then
-	# 在 esac 之前插入 generic x86 默认配置
-	sed -i '/^esac$/i\
-\	*)\
-\		ucidef_set_interfaces_lan_wan "eth0 eth2 eth3" "eth1"\
-\		;;' "$NET_BOARD"
-fi
-
-# ===== network 配置文件修复（确保 br-lan 包含所有 LAN 口）=====
-NET_CONF="files/etc/config/network"
-if [ -f "$NET_CONF" ]; then
-	sed -i '/list ports/d' "$NET_CONF"
-	sed -i "/option name 'br-lan'/a\\tlist ports 'eth0'\n\tlist ports 'eth2'\n\tlist ports 'eth3'" "$NET_CONF"
-fi
+# ===== x86 generic 板型网口注册 =====
+# ⚠️ 已删除：02_network sed 注入和 network config sed
+# 根因：sed 的 \n 转义在 dash/sh 下不生效为换行，导致 02_network 脚本语法错误
+#       → board.d 执行失败 → 网络配置生成异常 → kmodloader 卡住
+# board.json 已定义 network.ports，config_generate 会读取并配置 br-lan
+# 不需要额外修改 02_network 和 /etc/config/network
 
 # ===== 固件编译日期（精确到时分）=====
 # openwrt-25.12 概览页用 JS 视图（index.ut + 10_system.js）
