@@ -59,71 +59,28 @@ for dir in package/kenzok8/*/; do
     fi
 done
 
-# ===== AdGuard Home 双 init 冲突修复 + 禁用自启动 =====
-# ⚠️ 关键问题：官方 adguardhome 核心包和 kenzok8 luci-app-adguardhome 各自带了一套 init 脚本
-# 官方核心包: /etc/init.d/adguardhome (START=19, UCI=adguardhome, yaml=/etc/adguardhome/adguardhome.yaml)
-# kenzok8 luci: /etc/init.d/AdGuardHome (START=95, UCI=AdGuardHome, yaml=/etc/AdGuardHome.yaml)
-# 两套 init 同时启动 → 端口 3000 冲突 → panic 死循环
-# LuCI 改的是 AdGuardHome UCI，但先启动的 adguardhome 读自己的 yaml → 配置不生效
-# 修复：删除官方核心包的 init + defaults + UCI config，只保留 kenzok8 luci 版的一套
-# 另外：kenzok8 luci 版 AdGuardHome init 默认 enabled，刷机首次启动会自动跑
-# 但没有 yaml → 走 web 向导时 53 端口被 dnsmasq 占 → DNS 异常
-# 修复：通过 uci-defaults 在首次启动时禁用 AdGuardHome 自启动
+# ===== AdGuard Home：删核心只留 LuCI 壳子 =====
+# Lullaby 决定不预装 AGH 核心，只保留 luci-app 前端，之后自己下载配置
+# 原因：AGH 核心随开机自启动（postinst enable + S95AdGuardHome），
+# 没有 yaml 配置 → 走 web 向导 → 53 端口跟 dnsmasq 冲突 → DNS 异常
+# uci-defaults 方案不可靠（postinst 在安装时就 enable 了，比 uci-defaults 早）
 
-# 删除 kenzok8 luci-app-adguardhome 自带的预置 yaml（含 admin 密码 + 过滤规则列表）
-# 不带预设配置才能走首次启动 web 向导
+# 1. 删除 AGH 核心包源码（不编译核心二进制）
+rm -rf package/kenzok8/adguardhome
+
+# 2. 删除 luci-app-adguardhome 自带的预置 yaml
 rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 
-# 清空官方核心包的 init 脚本（只保留空壳，让 procd 不报错）
-AGH_CORE_INIT="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.init' -print -quit 2>/dev/null)"
-if [ -n "$AGH_CORE_INIT" ]; then
-	cat > "$AGH_CORE_INIT" << 'AGHINIT'
-#!/bin/sh /etc/rc.common
-# Disabled: luci-app-adguardhome provides its own init at /etc/init.d/AdGuardHome
-# Running two inits causes port 3000 conflict (START=19 vs START=95)
-START=19
-USE_PROCD=1
-boot() { return 0; }
-start_service() { return 0; }
-stop_service() { return 0; }
-service_triggers() { return 0; }
-AGHINIT
+# 3. 修改 luci-app Makefile：
+#    - 删掉 postinst 里的 enable（自启动根因）
+#    - INCLUDE_binary 默认 y→n（不默认打包核心）
+#    - 删掉 LUCI_DEPENDS 里的核心依赖声明
+AGH_LUCI_MK="$(find package/kenzok8 -path '*/luci-app-adguardhome/Makefile' -print -quit 2>/dev/null)"
+if [ -n "$AGH_LUCI_MK" ] && [ -f "$AGH_LUCI_MK" ]; then
+	sed -i '/define Package\/luci-app-adguardhome\/postinst/,/^endef$/d' "$AGH_LUCI_MK"
+	sed -i 's/default y/default n/' "$AGH_LUCI_MK"
+	sed -i '/INCLUDE_binary:adguardhome/d' "$AGH_LUCI_MK"
 fi
-
-# 删除官方核心包的 UCI defaults（它会迁移配置，和 luci 版冲突）
-AGH_DEFAULTS="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.defaults' -print -quit 2>/dev/null)"
-if [ -n "$AGH_DEFAULTS" ]; then
-	echo '# Disabled: luci-app-adguardhome manages its own config' > "$AGH_DEFAULTS"
-fi
-
-# 删除官方核心包的 UCI config 模板（防止生成 /etc/config/adguardhome）
-AGH_UCI="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.conf' -print -quit 2>/dev/null)"
-if [ -n "$AGH_UCI" ]; then
-	echo '# Disabled: luci-app-adguardhome uses /etc/config/AdGuardHome instead' > "$AGH_UCI"
-fi
-
-# 禁用 AdGuardHome 自启动（kenzok8 luci 版 init 默认 enabled，刷机后自动跑）
-# 通过 uci-defaults 在首次启动时执行 /etc/init.d/AdGuardHome disable
-AGH_DISABLE_DIR="$(find package/kenzok8/luci-app-adguardhome -type d -name 'uci-defaults' -print -quit 2>/dev/null)"
-if [ -n "$AGH_DISABLE_DIR" ]; then
- cat > "${AGH_DISABLE_DIR}/80-adguardhome-disable" << 'AGHDENY'
-#!/bin/sh
-# Disable AdGuardHome auto-start on fresh install
-# Without yaml config, auto-start binds port 3000 for web wizard but conflicts with dnsmasq on port 53
-/etc/init.d/AdGuardHome disable 2>/dev/null
-exit 0
-AGHDENY
- chmod +x "${AGH_DISABLE_DIR}/80-adguardhome-disable"
-else
- mkdir -p package/kenzok8/luci-app-adguardhome/root/etc/uci-defaults
- cat > package/kenzok8/luci-app-adguardhome/root/etc/uci-defaults/80-adguardhome-disable << 'AGHDENY'
-#!/bin/sh
-/etc/init.d/AdGuardHome disable 2>/dev/null
-exit 0
-AGHDENY
- chmod +x package/kenzok8/luci-app-adguardhome/root/etc/uci-defaults/80-adguardhome-disable
-fi
-
 
 # ===== MosDNS v5 依赖保障 =====
 # kenzok8/small 的 luci-app-mosdns v1.7.2 依赖：
@@ -204,7 +161,7 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 
 # --- ZeroTier & IPSec → LEDE feeds openwrt-25.12 已在 admin/vpn/，无需修改 ---
 
-# ===== AdGuard Home 保留在服务菜单，预设yaml已删除，自启动已禁用 =====
+# ===== AdGuard Home 只留 LuCI 壳子，核心已删除 =====
 
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
