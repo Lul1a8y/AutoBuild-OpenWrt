@@ -1,8 +1,8 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
 # diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6 + 编译时间 + 网口修复
-# 更新日期: 2026-05-12
-# 修复: mosdns版本锁定5.3.4-5 + AGH双init端口冲突 + 编译时间精确到时分 + 概览页br-lan接口
+# 更新日期: 2026-05-14
+# 修复: mosdns feeds冲突(删旧版5.3.4-1→剩5.3.4-5) + AGH禁用自启动 + 编译时间精确到时分
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -26,6 +26,7 @@ rm -rf feeds/luci/applications/luci-app-passwall
 rm -rf feeds/luci/applications/luci-app-passwall2
 rm -rf feeds/luci/applications/luci-app-mosdns
 rm -rf feeds/luci/applications/luci-app-adguardhome
+rm -rf feeds/packages/net/mosdns
 rm -rf package/kenzok8-small/luci-app-passwall2
 
 # ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
@@ -58,13 +59,16 @@ for dir in package/kenzok8/*/; do
     fi
 done
 
-# ===== AdGuard Home 双 init 冲突修复 =====
+# ===== AdGuard Home 双 init 冲突修复 + 禁用自启动 =====
 # ⚠️ 关键问题：官方 adguardhome 核心包和 kenzok8 luci-app-adguardhome 各自带了一套 init 脚本
 # 官方核心包: /etc/init.d/adguardhome (START=19, UCI=adguardhome, yaml=/etc/adguardhome/adguardhome.yaml)
 # kenzok8 luci: /etc/init.d/AdGuardHome (START=95, UCI=AdGuardHome, yaml=/etc/AdGuardHome.yaml)
 # 两套 init 同时启动 → 端口 3000 冲突 → panic 死循环
 # LuCI 改的是 AdGuardHome UCI，但先启动的 adguardhome 读自己的 yaml → 配置不生效
 # 修复：删除官方核心包的 init + defaults + UCI config，只保留 kenzok8 luci 版的一套
+# 另外：kenzok8 luci 版 AdGuardHome init 默认 enabled，刷机首次启动会自动跑
+# 但没有 yaml → 走 web 向导时 53 端口被 dnsmasq 占 → DNS 异常
+# 修复：通过 uci-defaults 在首次启动时禁用 AdGuardHome 自启动
 
 # 删除 kenzok8 luci-app-adguardhome 自带的预置 yaml（含 admin 密码 + 过滤规则列表）
 # 不带预设配置才能走首次启动 web 向导
@@ -97,6 +101,29 @@ AGH_UCI="$(find package/kenzok8 -path '*/adguardhome/files/adguardhome.conf' -pr
 if [ -n "$AGH_UCI" ]; then
 	echo '# Disabled: luci-app-adguardhome uses /etc/config/AdGuardHome instead' > "$AGH_UCI"
 fi
+
+# 禁用 AdGuardHome 自启动（kenzok8 luci 版 init 默认 enabled，刷机后自动跑）
+# 通过 uci-defaults 在首次启动时执行 /etc/init.d/AdGuardHome disable
+AGH_DISABLE_DIR="$(find package/kenzok8/luci-app-adguardhome -type d -name 'uci-defaults' -print -quit 2>/dev/null)"
+if [ -n "$AGH_DISABLE_DIR" ]; then
+ cat > "${AGH_DISABLE_DIR}/80-adguardhome-disable" << 'AGHDENY'
+#!/bin/sh
+# Disable AdGuardHome auto-start on fresh install
+# Without yaml config, auto-start binds port 3000 for web wizard but conflicts with dnsmasq on port 53
+/etc/init.d/AdGuardHome disable 2>/dev/null
+exit 0
+AGHDENY
+ chmod +x "${AGH_DISABLE_DIR}/80-adguardhome-disable"
+else
+ mkdir -p package/kenzok8/luci-app-adguardhome/root/etc/uci-defaults
+ cat > package/kenzok8/luci-app-adguardhome/root/etc/uci-defaults/80-adguardhome-disable << 'AGHDENY'
+#!/bin/sh
+/etc/init.d/AdGuardHome disable 2>/dev/null
+exit 0
+AGHDENY
+ chmod +x package/kenzok8/luci-app-adguardhome/root/etc/uci-defaults/80-adguardhome-disable
+fi
+
 
 # ===== MosDNS v5 依赖保障 =====
 # kenzok8/small 的 luci-app-mosdns v1.7.2 依赖：
@@ -177,20 +204,16 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 
 # --- ZeroTier & IPSec → LEDE feeds openwrt-25.12 已在 admin/vpn/，无需修改 ---
 
-# ===== AdGuard Home 保留在服务菜单，预设yaml已在上方删除 =====
+# ===== AdGuard Home 保留在服务菜单，预设yaml已删除，自启动已禁用 =====
 
 # ===== 权限修复 =====
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 
-# ===== MosDNS 版本锁定 + 启动修复 =====
-# 远端 kenzok8/small 已更新到 PKG_VERSION=5.3.4 PKG_RELEASE=5
-# 加 sed 确保版本正确（防止 kenzok8 回退或 clone 缓存问题）
-MOSDNS_MK="$(find package/kenzok8-small -path '*/mosdns/Makefile' -print -quit 2>/dev/null)"
-if [ -n "$MOSDNS_MK" ] && [ -f "$MOSDNS_MK" ]; then
-	sed -i 's/^PKG_VERSION:=.*/PKG_VERSION:=5.3.4/' "$MOSDNS_MK"
-	sed -i 's/^PKG_RELEASE:=.*/PKG_RELEASE:=5/' "$MOSDNS_MK"
-fi
-
+# ===== MosDNS 版本修复 + 启动优化 =====
+# 根因：feeds/packages/net/mosdns (coolsnowwolf) 是 5.3.4-1
+# kenzok8/small 是 5.3.4-5，feeds install 优先用先声明的源 → 选中旧版 -1
+# 已在上方 rm -rf feeds/packages/net/mosdns 删除旧版，只剩 kenzok8/small 的 5.3.4-5
+# 不再需要版本锁定 sed
 # mosdns init START=75 在 x86 设备上启动太早导致 DNS 重定向失败
 # 降低启动优先级: START=75 → START=99，确保网络就绪后再启动
 # 参考: https://github.com/sbwml/luci-app-mosdns/issues/253
