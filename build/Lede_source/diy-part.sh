@@ -81,6 +81,14 @@ if [ -n "$AGH_LUCI_MK" ] && [ -f "$AGH_LUCI_MK" ]; then
 	sed -i 's/default y/default n/' "$AGH_LUCI_MK"
 	sed -i '/INCLUDE_binary:adguardhome/d' "$AGH_LUCI_MK"
 fi
+# 4. 修复 update_core.sh 架构映射：opkg 返回 "x86_64"，但脚本只匹配了 "x86"
+# 原脚本 detect_arch() 里 case "$Archt" 只有 x86) 没有 x86_64)
+# sed: 在 x86) 行前面插入 x86_64) Arch="amd64" ;;
+AGH_UPDATE="$(find package/kenzok8 -path '*/AdGuardHome/update_core.sh' -print -quit 2>/dev/null)"
+if [ -n "$AGH_UPDATE" ] && [ -f "$AGH_UPDATE" ]; then
+	# 把 detect_arch() 里的 x86) 改成 x86_64|x86) ，同时匹配两种架构名
+	sed -E -i 's/^([[:space:]]*)x86\)$/\1x86_64|x86)/' "$AGH_UPDATE"
+fi
 
 # ===== MosDNS v5 依赖保障 =====
 # kenzok8/small 的 luci-app-mosdns v1.7.2 依赖：
