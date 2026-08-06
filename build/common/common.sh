@@ -178,6 +178,10 @@ Diy_chuli() {
 
 sed -i '$ s/exit 0$//' ${Home}/package/base-files/files/etc/rc.local
 echo '
+# 关闭 Intel i225-V EEE，防止 LAN 口链路抖动和 TX 队列超时 (2026-08-06)
+for iface in eth0 eth1 eth2 eth3; do
+	[ -x /usr/sbin/ethtool ] && ethtool --set-eee $iface eee off 2>/dev/null
+done
 /etc/init.d/network restart
 /etc/init.d/uhttpd restart
 exit 0
