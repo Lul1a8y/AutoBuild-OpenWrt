@@ -1,8 +1,9 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
 # diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6 + 编译时间 + 网口修复
-# 更新日期: 2026-05-14
+# 更新日期: 2026-09-03
 # 修复: mosdns feeds冲突(删旧版5.3.4-1→剩5.3.4-5) + AGH禁用自启动 + 编译时间精确到时分
+# 2026-09-03: 补拉 geo2txt — luci-app-mosdns v1.7.12 新依赖，kenzok8/small 漏同步，9/2 编译在此失败
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -13,6 +14,17 @@ sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/f
 # ===== 添加权威插件源 =====
 git clone https://github.com/kenzok8/openwrt-packages package/kenzok8
 git clone https://github.com/kenzok8/small package/kenzok8-small
+
+# ===== geo2txt 补拉：luci-app-mosdns ≥1.7.12 的新依赖（2026-09-03 修复）=====
+# 根因: kenzok8/small 同步 luci-app-mosdns 时漏带上游 sbwml/luci-app-mosdns
+#       仓库里的 geo2txt 兄弟包 → package/install 阶段报:
+#       pkg_hash_check_unresolved: cannot find dependency geo2txt for luci-app-mosdns
+# 方案: 从 sbwml 官方 v5 分支克隆后拷贝 geo2txt 目录（同 filetransfer 的 clone+cp 做法，
+#       sparse-checkout 在 CI 不稳定不用）
+git clone --depth 1 --single-branch -b v5 \
+	https://github.com/sbwml/luci-app-mosdns.git /tmp/mosdns-upstream
+cp -r /tmp/mosdns-upstream/geo2txt package/kenzok8-small/geo2txt
+rm -rf /tmp/mosdns-upstream
 
 # ===== 默认IP 192.168.50.2 =====
 sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_generate
@@ -91,11 +103,11 @@ if [ -n "$AGH_UPDATE" ] && [ -f "$AGH_UPDATE" ]; then
 fi
 
 # ===== MosDNS v5 依赖保障 =====
-# kenzok8/small 的 luci-app-mosdns v1.7.2 依赖：
-# +mosdns +curl +v2ray-geoip +v2ray-geosite +v2dat
-# v2dat 在 feeds/packages/utils/v2dat（Go 编译）
-# v2ray-geoip/geosite 在 feeds/packages/net/（数据包）
-# x86_64 平台 v2dat 编译通常无问题，.config 已显式声明依赖
+# kenzok8/small 的 luci-app-mosdns 现为 v1.7.12（2026-09 实测），依赖：
+# +mosdns +uclient-fetch +v2ray-geoip +v2ray-geosite +geo2txt +ucode
+# mosdns/v2ray-geoip/v2ray-geosite 在 package/kenzok8-small/ 内自带
+# geo2txt 由本文件上方从 sbwml/luci-app-mosdns(v5) 补拉
+# .config 已显式声明这些运行时依赖
 # 注意：不能在这里替换 feeds/packages/lang/golang
 # 因为第二次 feeds update -a 会重置该目录
 
