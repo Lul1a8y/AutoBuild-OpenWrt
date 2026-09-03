@@ -4,6 +4,7 @@
 # 更新日期: 2026-09-03
 # 修复: mosdns feeds冲突(删旧版5.3.4-1→剩5.3.4-5) + AGH禁用自启动 + 编译时间精确到时分
 # 2026-09-03: 补拉 geo2txt — luci-app-mosdns v1.7.12 新依赖，kenzok8/small 漏同步，9/2 编译在此失败
+# 2026-09-03: 克隆全部 depth 1 + 末尾源码完整性检查（9/2 OpenClash 克隆超时被静默丢弃的教训）
 
 # ===== 内核锁定 6.6 LTS =====
 sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
@@ -12,8 +13,8 @@ sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefil
 sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
 
 # ===== 添加权威插件源 =====
-git clone https://github.com/kenzok8/openwrt-packages package/kenzok8
-git clone https://github.com/kenzok8/small package/kenzok8-small
+git clone --depth 1 -b master https://github.com/kenzok8/openwrt-packages package/kenzok8
+git clone --depth 1 -b master https://github.com/kenzok8/small package/kenzok8-small
 
 # ===== geo2txt 补拉：luci-app-mosdns ≥1.7.12 的新依赖（2026-09-03 修复）=====
 # 根因: kenzok8/small 同步 luci-app-mosdns 时漏带上游 sbwml/luci-app-mosdns
@@ -58,8 +59,8 @@ rm -rf package/kenzok8/luci-app-argon-config
 # 自定义概览页内容通过修改 JS 视图实现（在工作流 yml 中处理）
 
 # ===== 官方源 clone =====
-git clone -b master https://github.com/vernesong/OpenClash.git package/openclash
-git clone -b master https://github.com/fw876/helloworld.git package/helloworld
+git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/openclash
+git clone --depth 1 -b master https://github.com/fw876/helloworld.git package/helloworld
 
 # ===== kenzok8/openwrt-packages 嵌套目录修复 =====
 # kenzok8 仓库有些包存在 pkg/pkg/Makefile 嵌套，编译系统会跳过
@@ -374,3 +375,19 @@ ACLEOF
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
+
+# ===== 源码完整性检查（2026-09-03）=====
+# 9/2 教训: OpenClash 克隆被 GitHub 掐断(early EOF, 挂1h后失败)但脚本无 set -e,
+# 继续跑 → defconfig 静默丢弃 luci-app-openclash → 差点编出没有 OpenClash 的固件
+# 任何源缺失立即中止, 别浪费 4 小时编残废固件
+for f in \
+  package/kenzok8/luci-app-adguardhome/Makefile \
+  package/kenzok8-small/luci-app-mosdns/Makefile \
+  package/kenzok8-small/geo2txt/Makefile \
+  package/openclash/luci-app-openclash/Makefile \
+  package/helloworld/luci-app-ssr-plus/Makefile \
+  feeds/luci/applications/luci-app-filetransfer/Makefile \
+  feeds/luci/libs/luci-lib-fs/Makefile; do
+  [ -f "$f" ] || { echo "!! 缺少 $f — 上游源克隆/同步失败，中止编译"; exit 1; }
+done
+echo "== 关键源码完整性检查通过 =="
