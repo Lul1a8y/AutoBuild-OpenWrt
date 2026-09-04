@@ -144,6 +144,15 @@ jobs:
         # fix: 概览页添加编译日期（10_system.js）
         BUILD_DATE=$(echo "${Compile_Date}" | perl -pe 's/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/$1.$2.$3 $4:$5/')
         find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\\n\\t\\t_('Firmware Date'), 'Lul1a8y ${BUILD_DATE}',/ }" {} + 2>/dev/null || true
+        # 2026-09-04: AutoUpdate init 加固 — 必须在 feeds update 之后执行(feeds 树更新会还原文件)
+        # 症状: 开机 S99autoupdate 报 "uci: Entry not found" + "can't open '/etc/openwrt_update'"
+        # 修复: uci -q 容错 + 配置补 option github + 预置 /etc/openwrt_update
+        AU_DIR="feeds/luci/applications/luci-app-autoupdate"
+        if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
+          sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR/root/etc/init.d/autoupdate"
+          sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
+          printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR/root/etc/openwrt_update"
+        fi
         ./scripts/feeds install -a > /dev/null 2>&1
         ./scripts/feeds install -a -f
         # 2026-09-04: 移除 defconfig 自动带入的 vsftpd(FTP) 源(luci.mk i18n DEFAULT 链)
@@ -215,7 +224,7 @@ jobs:
         grep -r 'LUCI_DEPENDS' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || echo "argon Makefile not found"
         # fix: 概览页添加编译日期（10_system.js，缓存恢复后需重新执行）
         BUILD_DATE=$(echo "${Compile_Date}" | perl -pe 's/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/$1.$2.$3 $4:$5/')
-        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\n\t\t_('Firmware Date'), 'Lul1a8y ${BUILD_DATE}',/ }" {} + 2>/dev/null || true
+        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\\n\\t\\t_('Firmware Date'), 'Lul1a8y ${BUILD_DATE}',/ }" {} + 2>/dev/null || true
         # 2026-09-04: 缓存恢复会带回 vsftpd/clashoo 源 + .config 勾选 → 再次移除/反选
         # (防 defconfig 通过 luci.mk/kenzok8 i18n DEFAULT 链自动带入)
         rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
@@ -226,7 +235,13 @@ jobs:
         MOSDNS_INIT_R="$(find package/kenzok8-small -path '*/init.d/mosdns' -print -quit 2>/dev/null)"
         if [ -n "$MOSDNS_INIT_R" ] && [ -f "$MOSDNS_INIT_R" ]; then
           sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT_R"
-          sed -i '/config_get log_size/d' "$MOSDNS_INIT_R"
+        fi
+        # 缓存恢复同样会带回未加固的 autoupdate 源 → 重放加固
+        AU_DIR_R="feeds/luci/applications/luci-app-autoupdate"
+        if [ -d "$AU_DIR_R" ] && [ -f "$AU_DIR_R/root/etc/init.d/autoupdate" ]; then
+          sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR_R/root/etc/init.d/autoupdate"
+          sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR_R/root/etc/config/autoupdate" 2>/dev/null || true
+          printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR_R/root/etc/openwrt_update"
         fi
 
     - name: 下载dl库

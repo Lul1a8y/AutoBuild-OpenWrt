@@ -223,9 +223,9 @@ if [ -n "$MOSDNS_INIT" ] && [ -f "$MOSDNS_INIT" ]; then
 	# 2026-09-04: 上游 generate_config() 生成 /var/etc/mosdns.json 时带 log.size 键,
 	# 但实际编进固件的 mosdns 是 helloworld feed 的原版 5.3.4-1(IrineSistiana),
 	# 不支持 size → 开机 FATAL "'log' has invalid keys: size" crash loop
-	# 删掉该键: 原版/补丁版二进制都兼容
+	# 只删 json_add_string 行: 原版/补丁版二进制都兼容
+	# (config_get log_size 保留——纯读取无副作用, 且 LuCI 界面"日志大小"项仍有效)
 	sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT"
-	sed -i '/config_get log_size/d' "$MOSDNS_INIT"
 fi
 
 # ===== 概览页修复：board.json 定义网络拓扑 =====
@@ -401,21 +401,6 @@ ACLEOF
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
-
-# ===== AutoUpdate 启动脚本加固 (2026-09-04) =====
-# 症状: 每次开机 S99autoupdate 报 "uci: Entry not found" + "can't open '/etc/openwrt_update'"
-# 根因: init.d 无条件 uci get autoupdate.<sec>.github(配置无此键) + cat /etc/openwrt_update(首次刷机不存在)
-# 修复: 配置补 option github 默认值 + 预置 /etc/openwrt_update + uci 改 -q 容错
-AU_DIR="feeds/luci/applications/luci-app-autoupdate"
-if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
-	# uci get github → uci -q get (键缺失时静默返回空)
-	sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR/root/etc/init.d/autoupdate"
-	# 默认配置补 github 键(与预置文件同值 → 启动时 sed 不会误触发)
-	sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
-	# 预置更新信息文件(首次开机 cat 不再报错)
-	printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR/root/etc/openwrt_update"
-	echo "== AutoUpdate init 已加固 =="
-fi
 
 # ===== 源码完整性检查（2026-09-03）=====
 # 9/2 教训: OpenClash 克隆被 GitHub 掐断(early EOF, 挂1h后失败)但脚本无 set -e,
