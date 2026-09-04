@@ -159,6 +159,13 @@ jobs:
         # → 网络存储菜单多出 FTP 服务器；删源+删 install 软链
         rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
         rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
+        # 2026-09-05: 第140行第二次 feeds update -a 会把 coolsnowwolf feeds 的 mosdns 源带回
+        # (5.3.4-1, 仅203-205补丁, 无 stats_api 插件), feeds install 后顶掉 kenzok8/small
+        # 带 stats_api 补丁(216-222)的 5.3.4-r12 → 固件内 mosdns 缺 stats_api,
+        # luci-app-mosdns v1.7.12 默认生成 stats_collector{type:stats_api} → FATAL crash loop
+        # (症状: "plugin type stats_api not defined", 02:42 开机日志实测)
+        # 必须在 feeds install 之后删, diy-part.sh 里的 rm 会被 feeds update 还原
+        rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
         mv "$PATH1/$CONFIG_FILE" .config
         if [[ "${REGULAR_UPDATE}" == "true" ]]; then
           source "${PATH1}/upgrade.sh" && Diy_Part1
@@ -236,6 +243,8 @@ jobs:
         rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
         rm -rf package/kenzok8-small/clashoo package/kenzok8-small/luci-app-clashoo
         sed -i '/CONFIG_PACKAGE_luci-app-vsftpd=y/d;/CONFIG_PACKAGE_vsftpd=y/d;/CONFIG_PACKAGE_luci-i18n-vsftpd-zh-cn=y/d;/CONFIG_PACKAGE_luci-app-clashoo=y/d;/CONFIG_PACKAGE_clashoo=y/d;/CONFIG_PACKAGE_luci-i18n-clashoo-zh-cn=y/d' .config 2>/dev/null || true
+        # 2026-09-05: 旧整树缓存会带回 feeds 的 mosdns(无 stats_api) → 重放删除, 保留 kenzok8/small 带补丁版
+        rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
         # 缓存恢复会带回旧 luci-app-mosdns init(带 log.size 键) → 重放剥离
         MOSDNS_INIT_R="$(find package/kenzok8-small -path '*/init.d/mosdns' -print -quit 2>/dev/null)"
         if [ -n "$MOSDNS_INIT_R" ] && [ -f "$MOSDNS_INIT_R" ]; then
