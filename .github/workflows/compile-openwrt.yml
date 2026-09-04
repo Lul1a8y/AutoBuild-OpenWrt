@@ -206,15 +206,20 @@ jobs:
     - name: 加载缓存
       uses: actions/cache@v4
       with:
+        # 2026-09-04: 原整树缓存(openwrt/)编译后 >10GB 超 GitHub cache 单条上限 → 保存必失败;
+        # key 的 hashFiles('**/openwrt/Makefile') 因 openwrt 是 symlink 恒空 → restore 永远 miss
+        # → 每次 3-4h 冷编。改为只缓存 dl/(源码包) + staging_dir/(toolchain+编译产物),
+        # 用真实路径 /<target>/openwrt 避开 symlink; 固定 key 保证恢复命中。
         path: |
-          ${{ github.workspace }}/openwrt
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('**/openwrt/Makefile') }}
-        restore-keys: |
-          ${{ runner.os }}-openwrt-
+          /${{ matrix.target }}/openwrt/dl
+          /${{ matrix.target }}/openwrt/staging_dir
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-cache
         
     - name: 修复缓存覆盖
       run: |
         cd openwrt
+        # 2026-09-04: 缓存已改为只存 dl+staging_dir(不再覆盖源码树/.config/package/feeds),
+        # 下方 argon/date/AU/mosdns/vsftpd 重放为兼容旧整树缓存配置的保险, 均幂等无害
         # fix: argon +@wget-any dep not found in LEDE openwrt-25.12
         # 构建缓存恢复会覆盖 feeds update 后的 sed 修改
         # 必须在缓存恢复之后、编译之前再次执行 sed
