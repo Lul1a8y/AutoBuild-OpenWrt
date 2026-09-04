@@ -222,6 +222,12 @@ jobs:
         rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
         rm -rf package/kenzok8-small/clashoo package/kenzok8-small/luci-app-clashoo
         sed -i '/CONFIG_PACKAGE_luci-app-vsftpd=y/d;/CONFIG_PACKAGE_vsftpd=y/d;/CONFIG_PACKAGE_luci-i18n-vsftpd-zh-cn=y/d;/CONFIG_PACKAGE_luci-app-clashoo=y/d;/CONFIG_PACKAGE_clashoo=y/d;/CONFIG_PACKAGE_luci-i18n-clashoo-zh-cn=y/d' .config 2>/dev/null || true
+        # 缓存恢复会带回旧 luci-app-mosdns init(带 log.size 键) → 重放剥离
+        MOSDNS_INIT_R="$(find package/kenzok8-small -path '*/init.d/mosdns' -print -quit 2>/dev/null)"
+        if [ -n "$MOSDNS_INIT_R" ] && [ -f "$MOSDNS_INIT_R" ]; then
+          sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT_R"
+          sed -i '/config_get log_size/d' "$MOSDNS_INIT_R"
+        fi
 
     - name: 下载dl库
       id: package
