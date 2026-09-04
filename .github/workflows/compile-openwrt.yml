@@ -269,6 +269,13 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
+        # 2026-09-05: toolchain 冷编竞态修复 — 先串行编完 binutils 再全量并行
+        # 症状: 冷编 make -j 时 fortify-headers 与 binutils 同时编译(同秒启动),
+        # fortify 头先行装入 musl sysroot include → binutils .o 带 __sprintf_chk
+        # 等 fortify/LFS 符号, 链接期 libc 不匹配 → undefined reference (9/5 两次
+        # 失败; 9/4 两次成功纯属时序运气). 单独串行编 binutils 时 fortify-headers
+        # 尚未安装, .o 干净, 之后全量并行会跳过已完成的 binutils
+        make toolchain/binutils/install || make -j1 toolchain/binutils/install V=s
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_ENV
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
