@@ -141,40 +141,54 @@ sed -i 's/services/system/g' feeds/luci/applications/luci-app-ttyd/root/usr/shar
 sed -i 's/"title": "VPN"/"title": "GFW"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
 sed -i '/^msgid "VPN"$/,/^msgstr/s/^msgstr "VPN"/msgstr "GFW"/' feeds/luci/modules/luci-base/po/zh_Hans/base.po 2>/dev/null || true
 
-# ⚠️ 顺序：先插入 GFW 父类别 entry，再做 services→vpn 替换
-# 如果反过来，entry 插入模式 `{"admin", "services"}` 就不存在了（已被改为 vpn）
+# ⚠️ GFW 父类别 = luci-base 内置 admin/vpn(上方已把标题 VPN→GFW), 无需插入
+# (旧版插入 entry({"admin","vpn"},firstchild()...) 的模式 services"} 永无匹配
+#  —— entry 实际形态是 services", (后面跟逗号) —— 属死代码, 已删)
+
+# --- 精确迁移函数 (2026-09-04) ---
+# 旧版 find+sed 's/services/vpn/g' 是无差别全词替换, 上游实测会误伤:
+#   * OpenClash 英文文案 "...related services for routing..." → "related vpn"
+#   * settings.lua translate 注释、controller 里 pending_services 等服务列表变量
+# 新版只替换 LuCI admin 路径引用五种形态, 文案/变量一概不碰:
+#   {"admin", "services"..} / ("admin", "services"..) / 'admin','services'
+#   admin/services 斜杠路径 / CSS data-page="admin-services-*" / [[admin]],[[services]]
+# 替换后自检: 仍残留 admin 路径形态 → 上游源码结构漂移, 中止编译(防静默漏迁移)
+gfw_migrate() {
+	local dir="$1" name="$2"
+	find "$dir" -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+		-exec sed -i \
+		-e 's/"admin", "services"/"admin", "vpn"/g' \
+		-e "s/'admin', 'services'/'admin', 'vpn'/g" \
+		-e "s/'admin','services'/'admin','vpn'/g" \
+		-e 's|admin/services|admin/vpn|g' \
+		-e 's/admin-services-/admin-vpn-/g' \
+		-e 's/\[\[admin\]\], \[\[services\]\]/[[admin]], [[vpn]]/g' {} +
+	local RESIDUAL
+	RESIDUAL=$(find "$dir" -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
+		-exec grep -lE "\"admin\", \"services\"|admin/services|admin-services-|'admin', ?'services'" {} + 2>/dev/null) || true
+	if [ -n "$RESIDUAL" ]; then
+		echo "!! $name admin/services 迁移残留(上游结构可能漂移): $RESIDUAL"
+		exit 1
+	fi
+	echo "== $name 菜单已迁移至 GFW(admin/vpn), 无残留 =="
+}
 
 # --- OpenClash → GFW 菜单 (vernesong 官方源) ---
 OC_CTRL=$(find package/openclash -path '*/controller/openclash.lua' -print -quit 2>/dev/null)
 if [ -n "$OC_CTRL" ] && [ -f "$OC_CTRL" ]; then
-	# 先插入 GFW 父类别
-	sed -i '/entry({"admin", "services"}/i\
-entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$OC_CTRL"
-	# 再做 services→vpn 替换
-	find package/openclash -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-		-exec sed -i 's/services/vpn/g' {} +
+	gfw_migrate package/openclash OpenClash
 fi
 
 # --- PassWall → GFW 菜单 (kenzok8/small) ---
 PW_CTRL=$(find package/kenzok8-small -path '*/controller/passwall.lua' -print -quit 2>/dev/null)
 if [ -n "$PW_CTRL" ] && [ -f "$PW_CTRL" ]; then
-	# 先插入 GFW 父类别
-	sed -i '/entry({"admin", "services"}/i\
-entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$PW_CTRL"
-	# 再做 services→vpn 替换（覆盖 api.lua 的 string.format 等所有路径引用）
-	find package/kenzok8-small/luci-app-passwall -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-		-exec sed -i 's/services/vpn/g' {} +
+	gfw_migrate package/kenzok8-small/luci-app-passwall PassWall
 fi
 
 # --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
 SSR_CTRL=$(find package/helloworld -path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
 if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
-	# 先插入 GFW 父类别
-	sed -i '/entry({"admin", "services"}/i\
-entry({"admin", "vpn"}, firstchild(), "GFW", 45).dependent = false' "$SSR_CTRL"
-	# 再做 services→vpn 替换（覆盖 url 函数和 build_url 调用）
-	find package/helloworld/luci-app-ssr-plus -type f \( -name '*.lua' -o -name '*.htm' -o -name '*.js' \) \
-		-exec sed -i 's/services/vpn/g' {} +
+	gfw_migrate package/helloworld/luci-app-ssr-plus SSR-Plus
 fi
 
 # --- MosDNS → GFW 菜单 (kenzok8/small, JS-based, 使用 menu.d JSON) ---
