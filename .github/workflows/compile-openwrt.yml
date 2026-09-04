@@ -280,6 +280,9 @@ jobs:
         ls -la staging_dir/host/bin/gcc 2>/dev/null || echo '(host gcc 尚未创建)'
         echo '== binutils V=s 预编译 =='
         rm -rf build_dir/toolchain-*_*/binutils-*
+        # 2026-09-05 追加: 清空 sysroot lib, 排除 -L musl/lib 劫持 -lc 的嫌疑
+        # (configure fortify 测试链接成功但 as-new 链接失败, 唯一差异即此 -L)
+        rm -rf staging_dir/toolchain-*_*/lib
         make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_ENV
