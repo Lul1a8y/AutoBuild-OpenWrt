@@ -269,14 +269,18 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        # 2026-09-05: toolchain 冷编竞态修复 — 先串行编完 binutils 再全量并行
-        # 症状: 冷编 make -j 时 fortify-headers 与 binutils 同时编译(同秒启动),
-        # fortify 头先行装入 musl sysroot include → binutils .o 带 __sprintf_chk
-        # 等 fortify/LFS 符号, 链接期 libc 不匹配 → undefined reference (9/5 两次
-        # 失败; 9/4 两次成功纯属时序运气). 单独串行编 binutils 时 fortify-headers
-        # 尚未安装, .o 干净, 之后全量并行会跳过已 .built 的 binutils
-        # (目标必须是 toolchain/binutils/compile — install 目标不存在: No rule)
-        make toolchain/binutils/compile || make -j1 toolchain/binutils/compile V=s
+        # 2026-09-05 诊断: run1-4 binutils 冷编均链接期失败
+        # (undefined __sprintf_chk/fopen64; 9/4 两次成功, 9/3-9/5 间 lede 上游
+        # /runner 镜像/缓存均无差异 → 高度可疑 toolchain 并行时序或环境).
+        # 清 build_dir 后 V=s 完整预编译 binutils, 保留 configure 检测输出;
+        # 成功则 .built 落定, 后续全量并行自动跳过
+        echo '== toolchain env =='
+        gcc --version | head -1
+        ld --version | head -1
+        ls -la staging_dir/host/bin/gcc 2>/dev/null || echo '(host gcc 尚未创建)'
+        echo '== binutils V=s 预编译 =='
+        rm -rf build_dir/toolchain-*_*/binutils-*
+        make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_ENV
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
