@@ -146,6 +146,10 @@ jobs:
         find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\\n\\t\\t_('Firmware Date'), 'Lul1a8y ${BUILD_DATE}',/ }" {} + 2>/dev/null || true
         ./scripts/feeds install -a > /dev/null 2>&1
         ./scripts/feeds install -a -f
+        # 2026-09-04: 移除 defconfig 自动带入的 vsftpd(FTP) 源(luci.mk i18n DEFAULT 链)
+        # → 网络存储菜单多出 FTP 服务器；删源+删 install 软链
+        rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
+        rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
         mv "$PATH1/$CONFIG_FILE" .config
         if [[ "${REGULAR_UPDATE}" == "true" ]]; then
           source "${PATH1}/upgrade.sh" && Diy_Part1
@@ -211,7 +215,13 @@ jobs:
         grep -r 'LUCI_DEPENDS' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || echo "argon Makefile not found"
         # fix: 概览页添加编译日期（10_system.js，缓存恢复后需重新执行）
         BUILD_DATE=$(echo "${Compile_Date}" | perl -pe 's/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/$1.$2.$3 $4:$5/')
-        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\\n\\t\\t_('Firmware Date'), 'Lul1a8y ${BUILD_DATE}',/ }" {} + 2>/dev/null || true
+        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\n\t\t_('Firmware Date'), 'Lul1a8y ${BUILD_DATE}',/ }" {} + 2>/dev/null || true
+        # 2026-09-04: 缓存恢复会带回 vsftpd/clashoo 源 + .config 勾选 → 再次移除/反选
+        # (防 defconfig 通过 luci.mk/kenzok8 i18n DEFAULT 链自动带入)
+        rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
+        rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
+        rm -rf package/kenzok8-small/clashoo package/kenzok8-small/luci-app-clashoo
+        sed -i '/CONFIG_PACKAGE_luci-app-vsftpd=y/d;/CONFIG_PACKAGE_vsftpd=y/d;/CONFIG_PACKAGE_luci-i18n-vsftpd-zh-cn=y/d;/CONFIG_PACKAGE_luci-app-clashoo=y/d;/CONFIG_PACKAGE_clashoo=y/d;/CONFIG_PACKAGE_luci-i18n-clashoo-zh-cn=y/d' .config 2>/dev/null || true
 
     - name: 下载dl库
       id: package

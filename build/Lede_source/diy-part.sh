@@ -42,9 +42,15 @@ rm -rf feeds/luci/applications/luci-app-adguardhome
 rm -rf feeds/packages/net/mosdns
 rm -rf package/kenzok8-small/luci-app-passwall2
 
-# ===== 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
+# 删除 kenzok8/small 里自带的 openclash/ssr-plus，用官方最新源替换 =====
 rm -rf package/kenzok8-small/luci-app-openclash
 rm -rf package/kenzok8-small/luci-app-ssr-plus
+
+# 2026-09-04: kenzok8/small 9/3 新加入 clashoo(mihomo runtime wrapper)
+# 其 luci-i18n-clashoo-zh-cn 写死 DEFAULT:=LUCI_LANG_zh_Hans||(ALL&&m)
+# → defconfig 自动勾入 → 服务页莫名多 clashoo；这里直接删源，杜绝自动带入
+rm -rf package/kenzok8-small/clashoo
+rm -rf package/kenzok8-small/luci-app-clashoo
 
 # kenzok8 的 argon 主题/配置与 feeds/luci 冲突，且依赖不存在的 wget-any
 # feeds/luci (coolsnowwolf) 已自带 argon，删除 kenzok8 版本避免递归依赖
@@ -214,6 +220,12 @@ if [ -n "$MOSDNS_INIT" ] && [ -f "$MOSDNS_INIT" ]; then
 	sed -i 's/^START=75$/START=99/' "$MOSDNS_INIT"
 	# 确保默认配置文件路径为 /var/etc/mosdns.json（UCI 自动生成模式）
 	sed -i 's|^CONF=.*|CONF="/var/etc/mosdns.json"|' "$MOSDNS_INIT"
+	# 2026-09-04: 上游 generate_config() 生成 /var/etc/mosdns.json 时带 log.size 键,
+	# 但实际编进固件的 mosdns 是 helloworld feed 的原版 5.3.4-1(IrineSistiana),
+	# 不支持 size → 开机 FATAL "'log' has invalid keys: size" crash loop
+	# 删掉该键: 原版/补丁版二进制都兼容
+	sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT"
+	sed -i '/config_get log_size/d' "$MOSDNS_INIT"
 fi
 
 # ===== 概览页修复：board.json 定义网络拓扑 =====
@@ -389,6 +401,21 @@ ACLEOF
 
 # --- UPnP 翻译 ---
 sed -i 's/msgstr "UPnP"/msgstr "UPnP设置"/g' feeds/luci/applications/luci-app-upnp/po/zh_Hans/upnp.po 2>/dev/null || true
+
+# ===== AutoUpdate 启动脚本加固 (2026-09-04) =====
+# 症状: 每次开机 S99autoupdate 报 "uci: Entry not found" + "can't open '/etc/openwrt_update'"
+# 根因: init.d 无条件 uci get autoupdate.<sec>.github(配置无此键) + cat /etc/openwrt_update(首次刷机不存在)
+# 修复: 配置补 option github 默认值 + 预置 /etc/openwrt_update + uci 改 -q 容错
+AU_DIR="feeds/luci/applications/luci-app-autoupdate"
+if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
+	# uci get github → uci -q get (键缺失时静默返回空)
+	sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR/root/etc/init.d/autoupdate"
+	# 默认配置补 github 键(与预置文件同值 → 启动时 sed 不会误触发)
+	sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
+	# 预置更新信息文件(首次开机 cat 不再报错)
+	printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR/root/etc/openwrt_update"
+	echo "== AutoUpdate init 已加固 =="
+fi
 
 # ===== 源码完整性检查（2026-09-03）=====
 # 9/2 教训: OpenClash 克隆被 GitHub 掐断(early EOF, 挂1h后失败)但脚本无 set -e,
