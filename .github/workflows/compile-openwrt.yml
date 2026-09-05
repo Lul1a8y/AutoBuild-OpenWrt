@@ -288,6 +288,10 @@ jobs:
         #  .built 后全量阶段 musl 会重建 sysroot, 互不干扰
         rm -rf staging_dir/toolchain-*_musl
         make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
+        # 2026-09-05: hysteria(v2.12.1) 等 Go 包报模块 internal 子包缺失 —
+        # dl/go-mod-cache 是旧 run 缓存(9/4 时无 hysteria), 与当前 go.sum 错配.
+        # 清空让 Go 按 go.sum 重新完整下载 (runner 可直连 proxy.golang.org)
+        rm -rf dl/go-mod-cache
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_ENV
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
