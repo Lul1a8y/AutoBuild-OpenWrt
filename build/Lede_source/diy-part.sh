@@ -208,10 +208,16 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 
 # ===== MosDNS 版本修复 + 启动优化 =====
-# 根因：feeds/packages/net/mosdns (coolsnowwolf) 是 5.3.4-1
-# kenzok8/small 是 5.3.4-5，feeds install 优先用先声明的源 → 选中旧版 -1
-# 已在上方 rm -rf feeds/packages/net/mosdns 删除旧版，只剩 kenzok8/small 的 5.3.4-5
-# 不再需要版本锁定 sed
+# ⚠️ 真实版本格局(2026-09-05 run 日志 + GitHub 实测):
+#   - helloworld feed(fw876/helloworld, feeds.conf 自带): mosdns 5.3.4-1, 仅 203-205 补丁
+#   - coolsnowwolf feeds/packages/net/mosdns: 5.3.4-1, 仅 203-205 补丁
+#   - kenzok8/small(package/kenzok8-small/mosdns): 5.3.4-r12, patches 203-222,
+#     216-222 = stats_api 插件(luci-app-mosdns v1.7.12 默认生成 config 所需)
+# feeds install -a -f 时 helloworld 会 "Overriding core package 'mosdns' with version
+# from helloworld" 顶掉 core → 不处理则固件编到原版 → stats_api FATAL crash loop。
+# 本文件的 rm 跑在 workflow 第二次 feeds update -a 之前会被还原, 真正删除+自检在
+# .github/workflows/compile-openwrt.yml「加载设置」步骤(feeds install 之后)。
+# 下方 mosdns init 的 sed 在 diy-part 阶段对 kenzok8-small 生效, 缓存重放由 yml 兜底。
 # mosdns init START=75 在 x86 设备上启动太早导致 DNS 重定向失败
 # 降低启动优先级: START=75 → START=99，确保网络就绪后再启动
 # 参考: https://github.com/sbwml/luci-app-mosdns/issues/253
@@ -221,8 +227,7 @@ if [ -n "$MOSDNS_INIT" ] && [ -f "$MOSDNS_INIT" ]; then
 	# 确保默认配置文件路径为 /var/etc/mosdns.json（UCI 自动生成模式）
 	sed -i 's|^CONF=.*|CONF="/var/etc/mosdns.json"|' "$MOSDNS_INIT"
 	# 2026-09-04: 上游 generate_config() 生成 /var/etc/mosdns.json 时带 log.size 键,
-	# 但实际编进固件的 mosdns 是 helloworld feed 的原版 5.3.4-1(IrineSistiana),
-	# 不支持 size → 开机 FATAL "'log' has invalid keys: size" crash loop
+	# 老固件曾编入不带 size 支持的 mosdns → FATAL "'log' has invalid keys: size" crash loop
 	# 只删 json_add_string 行: 原版/补丁版二进制都兼容
 	# (config_get log_size 保留——纯读取无副作用, 且 LuCI 界面"日志大小"项仍有效)
 	sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT"

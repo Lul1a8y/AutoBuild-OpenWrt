@@ -159,13 +159,28 @@ jobs:
         # → 网络存储菜单多出 FTP 服务器；删源+删 install 软链
         rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
         rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
-        # 2026-09-05: 第140行第二次 feeds update -a 会把 coolsnowwolf feeds 的 mosdns 源带回
-        # (5.3.4-1, 仅203-205补丁, 无 stats_api 插件), feeds install 后顶掉 kenzok8/small
-        # 带 stats_api 补丁(216-222)的 5.3.4-r12 → 固件内 mosdns 缺 stats_api,
-        # luci-app-mosdns v1.7.12 默认生成 stats_collector{type:stats_api} → FATAL crash loop
-        # (症状: "plugin type stats_api not defined", 02:42 开机日志实测)
-        # 必须在 feeds install 之后删, diy-part.sh 里的 rm 会被 feeds update 还原
+        # 2026-09-05: 修 mosdns stats_api —— 第一版(6d1eb4f)删错对象, run 33945234196 实测仍崩
+        # feeds install -a -f 日志铁证: "Overriding core package 'mosdns' with version from helloworld"
+        # 真正顶掉 kenzok8/small 带 stats_api 补丁版(5.3.4-r12, patches 216-222)的是 helloworld
+        # feed(fw876/helloworld, 5.3.4-1 仅 203-205 补丁, 无 stats_api)——旧删 coolsnowwolf
+        # feeds/packages/net/mosdns 只删了已被 -f 覆盖的输家副本, 固件仍编 feeds/helloworld/mosdns
+        # 原版 → luci-app-mosdns v1.7.12 默认生成 stats_collector{type:stats_api} → 开机 FATAL
+        # "plugin type stats_api not defined" crash loop (02:42 与 16:04 开机日志两次实测)
+        # diy-part.sh 里的 rm 跑在第140行第二次 feeds update -a 之前, 会被还原, 必须在此删
+        # 修: feeds install 之后删光 coolsnowwolf + helloworld 三处原版源(diy 克隆的
+        # package/helloworld/mosdns 一并删), 全树只留 kenzok8-small/mosdns → defconfig 唯一命中
         rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
+        rm -rf feeds/helloworld/mosdns package/feeds/helloworld/mosdns package/helloworld/mosdns
+        # 自检(防静默回归): mosdns 引擎源必须只剩 kenzok8-small 5.3.4-r12 且 stats_api 补丁在位
+        if grep -qE '^CONFIG_PACKAGE_(mosdns|luci-app-mosdns)=y' "$PATH1/$CONFIG_FILE" 2>/dev/null; then
+          MOSDNS_LEFT="$(find feeds package -maxdepth 6 -type f -path '*/mosdns/Makefile' 2>/dev/null)"
+          if [ "$(printf '%s\n' "$MOSDNS_LEFT" | grep -c .)" != "1" ] || ! printf '%s\n' "$MOSDNS_LEFT" | grep -q '/kenzok8-small/mosdns/Makefile'; then
+            echo "!! mosdns 源残留或缺失(应只剩 kenzok8-small/mosdns): $MOSDNS_LEFT"; exit 1
+          fi
+          grep -q '^PKG_RELEASE:=12$' "$MOSDNS_LEFT" || { echo "!! mosdns 非 kenzok8-small 5.3.4-r12: $(grep -E 'PKG_VERSION|PKG_RELEASE' "$MOSDNS_LEFT" | tr '\n' ' ')"; exit 1; }
+          [ -f "$(dirname "$MOSDNS_LEFT")/patches/216-plugin-add-stats_api-plugin.patch" ] || { echo "!! mosdns 缺 stats_api 补丁(216)"; exit 1; }
+          echo "== mosdns 源已锁定 kenzok8-small 5.3.4-r12 (stats_api 补丁在位) =="
+        fi
         mv "$PATH1/$CONFIG_FILE" .config
         if [[ "${REGULAR_UPDATE}" == "true" ]]; then
           source "${PATH1}/upgrade.sh" && Diy_Part1
@@ -244,7 +259,9 @@ jobs:
         rm -rf package/kenzok8-small/clashoo package/kenzok8-small/luci-app-clashoo
         sed -i '/CONFIG_PACKAGE_luci-app-vsftpd=y/d;/CONFIG_PACKAGE_vsftpd=y/d;/CONFIG_PACKAGE_luci-i18n-vsftpd-zh-cn=y/d;/CONFIG_PACKAGE_luci-app-clashoo=y/d;/CONFIG_PACKAGE_clashoo=y/d;/CONFIG_PACKAGE_luci-i18n-clashoo-zh-cn=y/d' .config 2>/dev/null || true
         # 2026-09-05: 旧整树缓存会带回 feeds 的 mosdns(无 stats_api) → 重放删除, 保留 kenzok8/small 带补丁版
+        # (含 helloworld 源: run 33945234196 实测原版来自 feeds/helloworld, -f 覆盖 coolsnowwolf)
         rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
+        rm -rf feeds/helloworld/mosdns package/feeds/helloworld/mosdns package/helloworld/mosdns
         # 缓存恢复会带回旧 luci-app-mosdns init(带 log.size 键) → 重放剥离
         MOSDNS_INIT_R="$(find package/kenzok8-small -path '*/init.d/mosdns' -print -quit 2>/dev/null)"
         if [ -n "$MOSDNS_INIT_R" ] && [ -f "$MOSDNS_INIT_R" ]; then
