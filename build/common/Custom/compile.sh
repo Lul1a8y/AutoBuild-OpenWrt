@@ -432,8 +432,8 @@ EOF
 sed -i "s/OpenWrt /${Ubuntu_mz} compiled in $(TZ=UTC-8 date "+%Y.%m.%d") @ OpenWrt /g" $ZZZ
 sed -i '/CYXluq4wUazHjmCDBCqXF/d' $ZZZ
 echo
-sed -i 's/"网络存储"/"NAS"/g' `grep "网络存储" -rl ./feeds/luci/applications`
-sed -i 's/"网络存储"/"NAS"/g' `grep "网络存储" -rl ./package`
+sed -i 's/"网络存储"/"网络储存"/g' `grep "网络存储" -rl ./feeds/luci/applications`
+sed -i 's/"网络存储"/"网络储存"/g' `grep "网络存储" -rl ./package`
 sed -i 's/"带宽监控"/"监控"/g' `grep "带宽监控" -rl ./feeds/luci/applications`
 sed -i 's/"Argon 主题设置"/"Argon设置"/g' `grep "Argon 主题设置" -rl ./feeds/luci/applications`
 ./scripts/feeds update -a

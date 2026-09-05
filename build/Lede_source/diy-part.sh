@@ -192,9 +192,17 @@ if [ -n "$PW_CTRL" ] && [ -f "$PW_CTRL" ]; then
 fi
 
 # --- SSR-Plus → GFW 菜单 (fw876/helloworld) ---
-SSR_CTRL=$(find package/helloworld -path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
+# ⚠️ 9/5 run 33954986489 日志铁证: 编译走 feeds/helloworld/luci-app-ssr-plus
+#    (make[3]: Entering directory '.../feeds/helloworld/luci-app-ssr-plus'),
+#    diy clone 的 package/helloworld 是第二副本未被编译选中 → 旧代码只迁 package/ 版 = 无效,
+#    SSRPLUS 实测仍挂服务菜单。真实编译源 + diy 副本都迁(各自独立文件, 幂等)。
+#    feeds 区 sed 在二次 feeds update 后保留生效(同 GFW 分类改名/OpenList 迁移机制)。
+SSR_CTRL=$(find feeds/helloworld/luci-app-ssr-plus package/helloworld/luci-app-ssr-plus \
+	-path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
 if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
-	gfw_migrate package/helloworld/luci-app-ssr-plus SSR-Plus
+	for SSR_DIR in feeds/helloworld/luci-app-ssr-plus package/helloworld/luci-app-ssr-plus; do
+		[ -d "$SSR_DIR" ] && gfw_migrate "$SSR_DIR" SSR-Plus
+	done
 fi
 
 # --- MosDNS → GFW 菜单 (kenzok8/small, JS-based, 使用 menu.d JSON) ---
