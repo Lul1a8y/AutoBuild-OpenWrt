@@ -171,15 +171,20 @@ jobs:
         # package/helloworld/mosdns 一并删), 全树只留 kenzok8-small/mosdns → defconfig 唯一命中
         rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
         rm -rf feeds/helloworld/mosdns package/feeds/helloworld/mosdns package/helloworld/mosdns
-        # 自检(防静默回归): mosdns 引擎源必须只剩 kenzok8-small 5.3.4-r12 且 stats_api 补丁在位
+        # 自检(防静默回归): mosdns 引擎源必须只剩 kenzok8-small(≥r12) 且 stats_api 补丁在位
+        # 版本不写死: 2026-09-05 晚 kenzok8/small 上游迭代到 r13, 写死 =12 曾误杀编译(run 33976091902)
         if grep -qE '^CONFIG_PACKAGE_(mosdns|luci-app-mosdns)=y' "$PATH1/$CONFIG_FILE" 2>/dev/null; then
           MOSDNS_LEFT="$(find feeds package -maxdepth 6 -type f -path '*/mosdns/Makefile' 2>/dev/null)"
           if [ "$(printf '%s\n' "$MOSDNS_LEFT" | grep -c .)" != "1" ] || ! printf '%s\n' "$MOSDNS_LEFT" | grep -q '/kenzok8-small/mosdns/Makefile'; then
             echo "!! mosdns 源残留或缺失(应只剩 kenzok8-small/mosdns): $MOSDNS_LEFT"; exit 1
           fi
-          grep -q '^PKG_RELEASE:=12$' "$MOSDNS_LEFT" || { echo "!! mosdns 非 kenzok8-small 5.3.4-r12: $(grep -E 'PKG_VERSION|PKG_RELEASE' "$MOSDNS_LEFT" | tr '\n' ' ')"; exit 1; }
+          REL_NUM="$(sed -n 's/^PKG_RELEASE:=\([0-9][0-9]*\)$/\1/p' "$MOSDNS_LEFT")"
+          case "$REL_NUM" in
+            ''|*[!0-9]*) echo "!! mosdns 版本无法解析: $(grep -E 'PKG_VERSION|PKG_RELEASE' "$MOSDNS_LEFT" | tr '\n' ' ')"; exit 1 ;;
+          esac
+          [ "$REL_NUM" -ge 12 ] || { echo "!! mosdns 版本过旧(需 kenzok8-small r12+, 实际 r$REL_NUM): $(grep -E 'PKG_VERSION|PKG_RELEASE' "$MOSDNS_LEFT" | tr '\n' ' ')"; exit 1; }
           [ -f "$(dirname "$MOSDNS_LEFT")/patches/216-plugin-add-stats_api-plugin.patch" ] || { echo "!! mosdns 缺 stats_api 补丁(216)"; exit 1; }
-          echo "== mosdns 源已锁定 kenzok8-small 5.3.4-r12 (stats_api 补丁在位) =="
+          echo "== mosdns 源已锁定 kenzok8-small r$REL_NUM (stats_api 补丁在位) =="
         fi
         mv "$PATH1/$CONFIG_FILE" .config
         if [[ "${REGULAR_UPDATE}" == "true" ]]; then
