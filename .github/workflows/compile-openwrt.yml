@@ -226,6 +226,7 @@ jobs:
         curl -k --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=🔔 您正在使用【${CPUNAME} CPU】【${CPUCORES}核心】【${CODE}】源码 编译固件中,请耐心等待...... ⏳" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
 
     - name: 加载缓存
+      id: cache
       uses: actions/cache@v4
       with:
         # 2026-09-04: 原整树缓存(openwrt/)编译后 >10GB 超 GitHub cache 单条上限 → 保存必失败;
@@ -286,30 +287,40 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        # 2026-09-05 诊断: run1-4 binutils 冷编均链接期失败
-        # (undefined __sprintf_chk/fopen64; 9/4 两次成功, 9/3-9/5 间 lede 上游
-        # /runner 镜像/缓存均无差异 → 高度可疑 toolchain 并行时序或环境).
-        # 清 build_dir 后 V=s 完整预编译 binutils, 保留 configure 检测输出;
-        # 成功则 .built 落定, 后续全量并行自动跳过
+        # ===== 9/5 binutils 修复背景(勿删) =====
+        # run1-4 binutils 冷编均链接期失败(undefined __sprintf_chk/fopen64);
+        # 根治: binutils 是 host 工具, 编译期间不许存在 musl sysroot
+        # (musl 并行先完成 → 链接命中 musl libc; 或 sysroot include 残留
+        #  musl 头 → off64_t 缺失). 整体清空 → binutils 纯 glibc 编译,
+        # .built 落定后全量阶段 musl 重建 sysroot, 互不干扰.
+        # 但无条件清空会让"缓存命中"场景也退化冷编(9/4 缓存健康时仅 433 行
+        # 增量日志 vs 9/5 后每次 5 万行+~1h toolchain 重编) → 现改为按
+        # cache-hit 分支: 命中直接增量; miss(真冷编)才走保险路径; 命中后
+        # make 失败(如 lede 上游动 go 包/go.sum 错配)自动降级保险路径重来.
         echo '== toolchain env =='
         gcc --version | head -1
         ld --version | head -1
         ls -la staging_dir/host/bin/gcc 2>/dev/null || echo '(host gcc 尚未创建)'
-        echo '== binutils V=s 预编译 =='
-        rm -rf build_dir/toolchain-*_*/binutils-*
-        # 2026-09-05 根治: binutils 是 host 工具, 编译期间不许存在 musl sysroot
-        # (run1-5: musl 并行先完成 → 链接命中 musl libc → undefined __sprintf_chk;
-        #  run6-7: 清 lib 后链接过, 但 sysroot include 残留 musl 头 → readelf.c
-        #  off64_t 缺失 error; sed 删 --with-sysroot 无效 — -I musl/include 是
-        #  sysroot 已存在所致). 整体清空 → binutils 纯 glibc 编译(9/4 成功条件),
-        #  .built 后全量阶段 musl 会重建 sysroot, 互不干扰
-        rm -rf staging_dir/toolchain-*_musl
-        make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
-        # 2026-09-05: hysteria(v2.12.1) 等 Go 包报模块 internal 子包缺失 —
-        # dl/go-mod-cache 是旧 run 缓存(9/4 时无 hysteria), 与当前 go.sum 错配.
-        # 清空让 Go 按 go.sum 重新完整下载 (runner 可直连 proxy.golang.org)
-        rm -rf dl/go-mod-cache
-        make -j$(nproc) || make -j1 V=s
+        if [ "${{ steps.cache.outputs.cache-hit }}" == "true" ]; then
+          echo '== 缓存命中: toolchain 直接复用, 增量编译 =='
+          make -j$(nproc) || {
+            echo '== 增量失败, 降级: 清 go-mod-cache+musl sysroot 走保险路径 =='
+            rm -rf dl/go-mod-cache
+            rm -rf build_dir/toolchain-*_*/binutils-*
+            rm -rf staging_dir/toolchain-*_musl
+            make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
+            make -j1 V=s
+          }
+        else
+          echo '== 缓存未命中(冷编): binutils 串行 V=s 预编译保险路径 =='
+          rm -rf build_dir/toolchain-*_*/binutils-*
+          rm -rf staging_dir/toolchain-*_musl
+          make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
+          # hysteria(v2.12.1) 等 Go 包报模块 internal 子包缺失 — dl/go-mod-cache
+          # 与当前 go.sum 错配; 冷编时清空让 Go 按 go.sum 完整重下
+          rm -rf dl/go-mod-cache
+          make -j$(nproc) || make -j1 V=s
+        fi
         echo "status=success" >> $GITHUB_ENV
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
         echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
