@@ -201,7 +201,8 @@ SSR_CTRL=$(find feeds/helloworld/luci-app-ssr-plus package/helloworld/luci-app-s
 	-path '*/controller/shadowsocksr.lua' -print -quit 2>/dev/null)
 if [ -n "$SSR_CTRL" ] && [ -f "$SSR_CTRL" ]; then
 	for SSR_DIR in feeds/helloworld/luci-app-ssr-plus package/helloworld/luci-app-ssr-plus; do
-		[ -d "$SSR_DIR" ] && gfw_migrate "$SSR_DIR" SSR-Plus
+		[ -d "$SSR_DIR" ] || continue
+		gfw_migrate "$SSR_DIR" SSR-Plus
 	done
 fi
 
