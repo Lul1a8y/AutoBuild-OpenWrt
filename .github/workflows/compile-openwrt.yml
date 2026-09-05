@@ -280,14 +280,13 @@ jobs:
         ls -la staging_dir/host/bin/gcc 2>/dev/null || echo '(host gcc 尚未创建)'
         echo '== binutils V=s 预编译 =='
         rm -rf build_dir/toolchain-*_*/binutils-*
-        # 2026-09-05 根治: 移除 --with-sysroot, 阻止 configure 把 -I musl/include
-        # 灌进 host binutils 编译 (musl 头无 off64_t/fortify 链 musl libc 未就绪
-        # → run1-5 undefined __sprintf_chk / run6 readelf off64_t error).
-        # gcc 后续调用 as/ld 均显式传 --sysroot, 删除无副作用
-        sed -i 's|--with-sysroot=$(TOOLCHAIN_DIR)||' toolchain/binutils/Makefile
-        grep -c 'with-sysroot' toolchain/binutils/Makefile || true
-        # 清空 sysroot lib, 排除 -L musl/lib 劫持 -lc (run6 验证有效)
-        rm -rf staging_dir/toolchain-*_*/lib
+        # 2026-09-05 根治: binutils 是 host 工具, 编译期间不许存在 musl sysroot
+        # (run1-5: musl 并行先完成 → 链接命中 musl libc → undefined __sprintf_chk;
+        #  run6-7: 清 lib 后链接过, 但 sysroot include 残留 musl 头 → readelf.c
+        #  off64_t 缺失 error; sed 删 --with-sysroot 无效 — -I musl/include 是
+        #  sysroot 已存在所致). 整体清空 → binutils 纯 glibc 编译(9/4 成功条件),
+        #  .built 后全量阶段 musl 会重建 sysroot, 互不干扰
+        rm -rf staging_dir/toolchain-*_musl
         make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_ENV
