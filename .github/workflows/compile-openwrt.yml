@@ -280,8 +280,13 @@ jobs:
         ls -la staging_dir/host/bin/gcc 2>/dev/null || echo '(host gcc 尚未创建)'
         echo '== binutils V=s 预编译 =='
         rm -rf build_dir/toolchain-*_*/binutils-*
-        # 2026-09-05 追加: 清空 sysroot lib, 排除 -L musl/lib 劫持 -lc 的嫌疑
-        # (configure fortify 测试链接成功但 as-new 链接失败, 唯一差异即此 -L)
+        # 2026-09-05 根治: 移除 --with-sysroot, 阻止 configure 把 -I musl/include
+        # 灌进 host binutils 编译 (musl 头无 off64_t/fortify 链 musl libc 未就绪
+        # → run1-5 undefined __sprintf_chk / run6 readelf off64_t error).
+        # gcc 后续调用 as/ld 均显式传 --sysroot, 删除无副作用
+        sed -i 's|--with-sysroot=$(TOOLCHAIN_DIR)||' toolchain/binutils/Makefile
+        grep -c 'with-sysroot' toolchain/binutils/Makefile || true
+        # 清空 sysroot lib, 排除 -L musl/lib 劫持 -lc (run6 验证有效)
         rm -rf staging_dir/toolchain-*_*/lib
         make toolchain/binutils/compile V=s && echo BINUTILS_OK || echo BINUTILS_FAILED
         make -j$(nproc) || make -j1 V=s
