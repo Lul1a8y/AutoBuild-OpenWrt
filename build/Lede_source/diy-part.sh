@@ -118,6 +118,23 @@ fi
 # 注意：不能在这里替换 feeds/packages/lang/golang
 # 因为第二次 feeds update -a 会重置该目录
 
+# ===== 修复 luci getFeatures 正则缺 multiline flag（2026-09-06）=====
+# 症状: LuCI 接口→lan→DHCP 常规里 force(即使检测到其他服务器仍强制DHCP)、
+#       DHCP-Options/Force DHCP-Options 等 dnsmasq-only 选项全部消失(7月版正常)
+# 根因: 官方 openwrt/luci 用 fd.read('line') 逐行读再 match(/^...$/) 每行锚定;
+#       coolsnowwolf/luci merge 时改成 fd.read('all') 一次读全部输出, 但正则
+#       /^Compile time options: (.+)$/s 没加 m(multiline) flag → ^ 只能锚定整个
+#       字符串开头, 而 dnsmasq --version 第一行是版本号 → 编译选项行永远匹配不上
+#       → result.dnsmasq 从不生成 → hasSystemFeature('dnsmasq')=false → 选项被藏
+#       (odhcpd 段有 result.odhcpd=false 兜底所以页面没整个消失, 只灭 dnsmasq-only 项)
+# 修复: 给两处 (.+)$/s 加 m → /sm (dnsmasq 段 + odhcpd 段一起修)
+LUCI_RPC_LUCI=feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci
+if [ -f "$LUCI_RPC_LUCI" ]; then
+	sed -i 's#(.+)$/s#(.+)$/sm#g' "$LUCI_RPC_LUCI"
+	grep -q 'Compile time options: (.+)$/sm' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 正则修复未生效(上游结构漂移?), 中止"; exit 1; }
+	echo "== luci getFeatures 正则 multiline 修复完成 =="
+fi
+
 # ===== 翻译微调 =====
 sed -i 's/"管理权"/"改密码"/g' feeds/luci/modules/luci-base/po/zh_Hans/base.po
 
