@@ -148,6 +148,12 @@ sed -i 's|admin/services|admin/control|g' feeds/luci/applications/luci-app-acces
 # --- OpenList → NAS 菜单 ---
 sed -i 's|admin/services/openlist|admin/nas/openlist|g' feeds/luci/applications/luci-app-openlist/root/usr/share/luci/menu.d/luci-app-openlist.json 2>/dev/null || true
 
+# --- NAS 类别标题 → 网络储存 (2026-09-06) ---
+# luci-base.json 把 admin/nas 标题写死 "NAS"(JSON title 字面显示, po 无 NAS 条目不走翻译)
+# → LuCI 侧栏显示英文 "NAS"；用户要求中文"网络储存"(与 GFW 标题改法同款)
+sed -i 's/"title": "NAS"/"title": "网络储存"/g' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || true
+grep -q '"title": "网络储存"' feeds/luci/modules/luci-base/root/usr/share/luci/menu.d/luci-base.json 2>/dev/null || echo "!! NAS→网络储存 标题替换未生效(上游结构漂移?)"
+
 # --- 文件浏览器 → 服务菜单 (从 NAS 移过来) ---
 
 # --- Wol → 网络菜单 ---
