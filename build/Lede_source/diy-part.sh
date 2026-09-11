@@ -118,21 +118,28 @@ fi
 # 注意：不能在这里替换 feeds/packages/lang/golang
 # 因为第二次 feeds update -a 会重置该目录
 
-# ===== 修复 luci getFeatures 正则缺 multiline flag（2026-09-06）=====
-# 症状: LuCI 接口→lan→DHCP 常规里 force(即使检测到其他服务器仍强制DHCP)、
-#       DHCP-Options/Force DHCP-Options 等 dnsmasq-only 选项全部消失(7月版正常)
-# 根因: 官方 openwrt/luci 用 fd.read('line') 逐行读再 match(/^...$/) 每行锚定;
-#       coolsnowwolf/luci merge 时改成 fd.read('all') 一次读全部输出, 但正则
-#       /^Compile time options: (.+)$/s 没加 m(multiline) flag → ^ 只能锚定整个
-#       字符串开头, 而 dnsmasq --version 第一行是版本号 → 编译选项行永远匹配不上
-#       → result.dnsmasq 从不生成 → hasSystemFeature('dnsmasq')=false → 选项被藏
-#       (odhcpd 段有 result.odhcpd=false 兜底所以页面没整个消失, 只灭 dnsmasq-only 项)
-# 修复: 给两处 (.+)$/s 加 m → /sm (dnsmasq 段 + odhcpd 段一起修)
+# ===== 修复 luci getFeatures 正则（2026-09-06 初修 / 2026-09-11 修正）=====
+# 症状A(9/6): LuCI 接口→lan→DHCP 常规里 force、DHCP-Options 等 dnsmasq-only 选项消失
+# 症状B(9/11, 由 A 的错误修法引入): LuCI 报 RPCError
+#   "RPC call to luci/getFeatures failed with error -32000: Object not found"
+#   —— rpcd 里整个 luci 对象都没了(ttyd/文件传输等所有 luci.* 依赖一起遭殃)
+# 根因: coolsnowwolf/luci 把官方的 fd.read('line') 改成 fd.read('all') 读全文; 而 ucode
+#   的 regex flag 只有 g/i/s, 且 s 的语义是**清掉 POSIX REG_NEWLINE**(^/$ 只锚整串、
+#   点号吃换行), 与 "multiline" 的直觉相反 → /^Compile time options: (.+)$/s 永远匹配
+#   不上(dnsmasq --version 首行是版本号) → result.dnsmasq 为空 →
+#   hasSystemFeature('dnsmasq')=false → 选项被藏 (odhcpd 段有 result.odhcpd=false 兜底)
+# 9/6 的错误修法: 给两处加 m flag。ucode 不认 m, 多余字符让整个 ucode 文件解析失败 →
+#   rpcd 加载不了 luci 对象 → 所有 luci.* RPC 报 -32000 (9/11 固件实测故障)
+# 正解(9/11): 直接**去掉那个 s** —— 不加任何 flag 时 ucode 就是 REG_NEWLINE 语义
+#   (^/$ 按行锚定、点号不吃换行), 正是这里需要的行为
+# 自检: 两处正则各查一次 + 严禁残留 m flag(再犯就是整个 rpcd ucode 崩)
 LUCI_RPC_LUCI=feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci
 if [ -f "$LUCI_RPC_LUCI" ]; then
-	sed -i 's#(.+)$/s#(.+)$/sm#g' "$LUCI_RPC_LUCI"
-	grep -q 'Compile time options: (.+)$/sm' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 正则修复未生效(上游结构漂移?), 中止"; exit 1; }
-	echo "== luci getFeatures 正则 multiline 修复完成 =="
+	sed -i 's#\$/sm#\$/#g; s#\$/s#\$/#g' "$LUCI_RPC_LUCI"
+	grep -qF 'Compile time options: (.+)$/);' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 正则修正未生效(dnsmasq 处, 上游结构漂移?), 中止"; exit 1; }
+	grep -qF 'Features: (.+)$/);' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 正则修正未生效(odhcpd 处), 中止"; exit 1; }
+	if grep -q '\$/sm' "$LUCI_RPC_LUCI"; then echo "!! luci rpcd ucode 残留 ucode 不支持的 m flag(会让 rpcd 加载失败), 中止"; exit 1; fi
+	echo "== luci getFeatures 正则修正完成(去掉 s flag, 用 ucode 默认的按行锚定) =="
 fi
 
 # ===== 翻译微调 =====

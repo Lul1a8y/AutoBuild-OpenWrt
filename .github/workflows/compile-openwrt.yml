@@ -272,6 +272,17 @@ jobs:
         sed -i "s/^NAME=\"%D\"\$/NAME=\"LEDE\"/; s/^VERSION=\"%V\"\$/VERSION=\"R26.05.20\"/; s/^PRETTY_NAME=\"%D %V\"\$/PRETTY_NAME=\"LEDE R26.05.20\"/; s/^BUILD_ID=\"%R\"\$/BUILD_ID=\"R26.05.20\"/; s|^OPENWRT_RELEASE=\"%D %V %C\"\$|OPENWRT_RELEASE=\"LEDE R26.05.20\"|" package/base-files/files/usr/lib/os-release
         grep -q "DISTRIB_DESCRIPTION='LEDE '" package/base-files/files/etc/openwrt_release || { echo "!! openwrt_release 版本钉死未生效(重放)"; exit 1; }
         grep -q 'OPENWRT_RELEASE="LEDE R26.05.20"' package/base-files/files/usr/lib/os-release || { echo "!! os-release 版本钉死未生效(重放)"; exit 1; }
+        # 2026-09-11: luci rpcd ucode 正则修正重放 — 缓存恢复会还原 feeds 源码树
+        # (ucode regex flag 只有 g/i/s 且 s=清 REG_NEWLINE; 加 m 会让整个 ucode 解析失败
+        #  → rpcd 里 luci 对象消失 → LuCI 报 -32000 Object not found。详见 diy-part.sh 同处注释)
+        LUCI_RPC_LUCI_R="feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
+        if [ -f "$LUCI_RPC_LUCI_R" ]; then
+          sed -i 's#\$/sm#\$/#g; s#\$/s#\$/#g' "$LUCI_RPC_LUCI_R"
+          grep -qF 'Compile time options: (.+)$/);' "$LUCI_RPC_LUCI_R" || { echo "!! luci getFeatures 正则修正未生效(重放/dnsmasq)"; exit 1; }
+          grep -qF 'Features: (.+)$/);' "$LUCI_RPC_LUCI_R" || { echo "!! luci getFeatures 正则修正未生效(重放/odhcpd)"; exit 1; }
+          if grep -q '\$/sm' "$LUCI_RPC_LUCI_R"; then echo "!! luci rpcd ucode 残留 ucode 不支持的 m flag(重放)"; exit 1; fi
+          echo "== luci getFeatures 正则修正重放完成 =="
+        fi
         # 2026-09-04: 缓存恢复会带回 vsftpd/clashoo 源 + .config 勾选 → 再次移除/反选
         # (防 defconfig 通过 luci.mk/kenzok8 i18n DEFAULT 链自动带入)
         rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
