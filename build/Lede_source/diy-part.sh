@@ -7,7 +7,15 @@
 # 2026-09-03: 克隆全部 depth 1 + 末尾源码完整性检查（9/2 OpenClash 克隆超时被静默丢弃的教训）
 
 # ===== 内核锁定 6.6 LTS =====
-sed -i 's/KERNEL_PATCHVER:=6.12/KERNEL_PATCHVER:=6.6/g' target/linux/x86/Makefile
+# 2026-09-11 修正: 上游 9/6 把 x86 默认内核从 6.12 改成 6.18 → 原来写死 "6.12" 的锚点
+# 静默失配(0 次替换、无任何报错) → 9/11 固件掉到 linux-6.18.49(用户预期 6.6.156)
+# 改为「匹配任意版本再钉回 6.6」+ 自检: 上游以后再 bump(6.20/7.x) 也不会静默漂移,
+# 且 pin 失效会直接中止编译。6.6 仍在上游保留: include/kernel-6.6 = 6.6.156,
+# target/linux/{generic,x86}/patches-6.6 齐全(含 i225 EEE 那条)。
+X86_MK=target/linux/x86/Makefile
+sed -i -E 's/^KERNEL_PATCHVER:=.*/KERNEL_PATCHVER:=6.6/' "$X86_MK"
+grep -qx 'KERNEL_PATCHVER:=6.6' "$X86_MK" || { echo "!! 内核 6.6 pin 未生效($X86_MK), 中止"; exit 1; }
+echo "== 内核 pin: $(grep -m1 '^KERNEL_PATCHVER' "$X86_MK") | 上游 testing 线: $(grep -m1 '^KERNEL_TESTING_PATCHVER' "$X86_MK") =="
 
 # ===== ttyd 终端需密码登录 =====
 sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
