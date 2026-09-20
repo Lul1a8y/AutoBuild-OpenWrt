@@ -278,9 +278,11 @@ jobs:
         LUCI_RPC_LUCI_R="feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
         if [ -f "$LUCI_RPC_LUCI_R" ]; then
           sed -i 's#\$/sm#\$/#g; s#\$/s#\$/#g' "$LUCI_RPC_LUCI_R"
-          grep -qF 'Compile time options: (.+)$/);' "$LUCI_RPC_LUCI_R" || { echo "!! luci getFeatures 正则修正未生效(重放/dnsmasq)"; exit 1; }
-          grep -qF 'Features: (.+)$/);' "$LUCI_RPC_LUCI_R" || { echo "!! luci getFeatures 正则修正未生效(重放/odhcpd)"; exit 1; }
-          if grep -q '\$/sm' "$LUCI_RPC_LUCI_R"; then echo "!! luci rpcd ucode 残留 ucode 不支持的 m flag(重放)"; exit 1; fi
+          # 自检(2026-09-20 改负向断言, 同 diy-part.sh 处: 不绑定上游字面量)
+          if grep -qE '\$/[a-z]*[sm]' "$LUCI_RPC_LUCI_R"; then
+            echo "!! luci rpcd ucode 残留 s/m flag(重放, 同 diy-part.sh 判定), 中止"; exit 1
+          fi
+          grep -q 'getFeatures' "$LUCI_RPC_LUCI_R" || { echo "!! luci getFeatures 段缺失(重放/上游漂移)"; exit 1; }
           echo "== luci getFeatures 正则修正重放完成 =="
         fi
         # 2026-09-04: 缓存恢复会带回 vsftpd/clashoo 源 + .config 勾选 → 再次移除/反选

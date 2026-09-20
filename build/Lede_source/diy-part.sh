@@ -144,10 +144,13 @@ fi
 LUCI_RPC_LUCI=feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci
 if [ -f "$LUCI_RPC_LUCI" ]; then
 	sed -i 's#\$/sm#\$/#g; s#\$/s#\$/#g' "$LUCI_RPC_LUCI"
-	grep -qF 'Compile time options: (.+)$/);' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 正则修正未生效(dnsmasq 处, 上游结构漂移?), 中止"; exit 1; }
-	grep -qF 'Features: (.+)$/);' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 正则修正未生效(odhcpd 处), 中止"; exit 1; }
-	if grep -q '\$/sm' "$LUCI_RPC_LUCI"; then echo "!! luci rpcd ucode 残留 ucode 不支持的 m flag(会让 rpcd 加载失败), 中止"; exit 1; fi
-	echo "== luci getFeatures 正则修正完成(去掉 s flag, 用 ucode 默认的按行锚定) =="
+	# 自检(2026-09-20 改负向断言): 不再要求"修后字面量存在"——上游 2026-09-13 6409fcb1
+	#   已自行把 dnsmasq 处改成 /Compile time options: ([^\n]+)/, 旧写法 grep 字面量必然失配 → 误杀编译
+	if grep -qE '\$/[a-z]*[sm]' "$LUCI_RPC_LUCI"; then
+		echo "!! luci rpcd ucode 残留 s/m flag(ucode 只认 g/i/s; s 会关掉按行锚定, m 会让 rpcd 整个加载失败), 中止"; exit 1
+	fi
+	grep -q 'getFeatures' "$LUCI_RPC_LUCI" || { echo "!! luci getFeatures 段缺失(上游结构漂移?), 中止"; exit 1; }
+	echo "== luci getFeatures 正则修正完成(去 s flag; 兼容上游自修形态 ([^\n]+)) =="
 fi
 
 # ===== 翻译微调 =====
