@@ -54,7 +54,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 
 **主要插件**
 
-OpenClash / PassWall / SSR-Plus / AdGuard Home / AList / FileBrowser / ZeroTier / ttyd / netdata / Diskman
+OpenClash / PassWall / SSR-Plus / AdGuard Home / OpenList(文件管理, 原 AList) / ZeroTier / ttyd / netdata / Diskman
 
 固件页面 Firmware page
 
