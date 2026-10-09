@@ -17,8 +17,22 @@ sed -i -E 's/^KERNEL_PATCHVER:=.*/KERNEL_PATCHVER:=6.6/' "$X86_MK"
 grep -qx 'KERNEL_PATCHVER:=6.6' "$X86_MK" || { echo "!! 内核 6.6 pin 未生效($X86_MK), 中止"; exit 1; }
 echo "== 内核 pin: $(grep -m1 '^KERNEL_PATCHVER' "$X86_MK") | 上游 testing 线: $(grep -m1 '^KERNEL_TESTING_PATCHVER' "$X86_MK") =="
 
-# ===== ttyd 终端需密码登录 =====
-sed -i '7a uci set system.@system[0].ttylogin=1' package/lean/default-settings/files/zzz-default-settings
+# ===== 控制台/ttyd 终端需密码登录 =====
+# 2026-10-09 修正: 必须写成 uci batch 的「批内语法」(不带 uci 前缀 + TAB 缩进)。
+# 原因: 上游 zzz-default-settings 第 2 行就是 `uci -q batch <<-EOF`, 注入行落在 heredoc 内部 ——
+# 写成 `uci set ...` 会被 batch 当未知命令静默丢弃(uci cli.c: ret==255 → 报 Unknown command 但继续)。
+# 实证: 09-03 与 10-07 两版固件的 /etc/uci-defaults/99-default-settings 第 8 行都只是这行死文本,
+# ttylogin 从未生效 → /usr/libexec/login.sh 落到 `exec /bin/ash --login` → 物理键盘/串口/hypervisor
+# 控制台免密 root。注入点改用内容锚点(不用行号), 提交由后随的 `uci commit system` 负责,
+# 注入后自检, 不通过即中止编译(避免再次静默失效)。
+TAB=$'	'
+TTL_DEFAULT=package/lean/default-settings/files/zzz-default-settings
+TTL_PAT="^${TAB}set system\.@system\[0\]\.ttylogin=1\$"
+grep -q "$TTL_PAT" "$TTL_DEFAULT" \
+	|| sed -i "/^[[:space:]]*delete system\.ntp\.server\$/a\\${TAB}set system.@system[0].ttylogin=1" "$TTL_DEFAULT"
+grep -q "$TTL_PAT" "$TTL_DEFAULT" \
+	|| { echo "!! ttylogin 注入失败(上游 zzz-default-settings 结构已变), 中止编译"; exit 1; }
+echo "== 控制台登录: $(grep -c 'set system.@system\[0\].ttylogin=1' "$TTL_DEFAULT") 处注入, $TTL_DEFAULT =="
 
 # ===== 添加权威插件源 =====
 git clone --depth 1 -b master https://github.com/kenzok8/openwrt-packages package/kenzok8

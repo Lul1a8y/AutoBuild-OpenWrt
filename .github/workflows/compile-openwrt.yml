@@ -1,11 +1,10 @@
 name: 编译 OpenWrt 固件
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - 'build/Tianling_source/start-up/start'
+  # 2026-10-09: 移除 push 触发器 —— 原来只挂在一个死路径(build/Tianling_source/start-up/start,
+  # 该源不在 matrix 里), 等于「改了它白烧一次 5h 编译」的陷阱。去掉后提交代码不会意外触发编译,
+  # 构建走手动 dispatch + 下面每 2 天的定时。若要「提交即编译」, 把 paths 指向真实输入
+  # (build/Lede_source/** 或 build/common/**) 再加回 push: 段。
 
   schedule:
    - cron: 0 17 1 */2 *
@@ -42,7 +41,10 @@ jobs:
       matrix:
         target: [Lede_source]
 
-        # [Lede_source,Lienol_source,Mortal_source,Tianling_source,openwrt_amlogic]
+        # 2026-10-09: 其它源(Lienol/Mortal/Tianling/openwrt_amlogic)未启用。
+        # openwrt_amlogic 目录(19 文件 / 22MB 二进制)与 common/Custom/{compile,seedconfig}.sh
+        # 已从仓库移除(矩阵只有 Lede_source, 它们永不参与构建); 需要 amlogic 时从上游
+        # 281677160/AutoBuild-OpenWrt 取回同名目录再启用。
 
     steps:
     - name: 准备结束
