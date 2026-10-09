@@ -91,7 +91,7 @@ config openclash 'config'
 	option enable_meta_sniffer_custom '0'
 	option append_wan_dns '0'
 	option custom_fallback_filter '0'
-	option dashboard_password 'gqc000xt'
+	option dashboard_password 'CHANGE_ME_BUILD_TIME'
 	option enable '0'
 	option enable_respect_rules '0'
 

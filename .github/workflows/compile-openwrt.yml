@@ -16,13 +16,25 @@ env:
   Apidz: ${{github.repository}}
   Run_number: ${{github.run_number}}
   Run_workflow: ${{github.workflow}}
-  REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+  # 2026-10-09: REPO_TOKEN 不再全局注入 —— 只在真正需要写权限的步骤用 step-level env 传;
+  # if 条件改用下面按 secrets 计算的 HAS_REPO_TOKEN 判断(原先是每个 step 都能拿到可写 token)
   TZ: Asia/Shanghai
+
+# 2026-10-09: 默认 GITHUB_TOKEN 收窄为只读(发布/上传走 repo 级 PAT, 不受此影响)
+permissions:
+  contents: read
+
+# 2026-10-09: 同一分支串行排队(cancel-in-progress: false) —— 并发 run 会互抢 actions/cache 导致缓存保存失败
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id || github.event_name == 'schedule'
+    # 2026-10-09: 冷编实测约 5h21m, GitHub 硬上限 6h → 显式 355min, 超时可控且日志有据
+    timeout-minutes: 355
 
     name: 编译 "${{matrix.target}}"
     strategy:
@@ -34,7 +46,7 @@ jobs:
 
     steps:
     - name: 准备结束
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
     - name: 读取设置
       run: |
@@ -54,7 +66,9 @@ jobs:
         echo "BY_INFORMATION=${BY_INFORMATION}" >> $GITHUB_ENV
         echo "AUTOMATIC_AMLOGIC=${AUTOMATIC_AMLOGIC}" >> $GITHUB_ENV
         echo "CangKu=${Apidz##*/}" >> $GITHUB_ENV
-        echo "Modelfile=${{matrix.target}}" >> $GITHUB_ENV 
+        echo "Modelfile=${{matrix.target}}" >> $GITHUB_ENV
+        # 2026-10-09: 由 secrets 计算一次供 if 条件使用(REPO_TOKEN 已从全局 env 移除)
+        echo "HAS_REPO_TOKEN=${{ secrets.REPO_TOKEN != '' }}" >> $GITHUB_ENV
     - name: 初始化
       run: |
         chmod -R +x "${GITHUB_WORKSPACE}/build/common"
@@ -71,6 +85,8 @@ jobs:
           echo "CODE=Mortal" >> $GITHUB_ENV
           echo "OpenWrt_name=18.06" >> $GITHUB_ENV
         fi
+        # 2026-10-09: 固件版本号唯一来源(上游 lede bump 只改这一处; post-feeds.sh / 发布信息 / 产物自检共用)
+        echo "FIRMWARE_VER=R26.05.20" >> $GITHUB_ENV
         echo "NETIP=package/base-files/files/etc/networkip" >> $GITHUB_ENV
         echo "DELETE=package/base-files/files/etc/deletefile" >> $GITHUB_ENV
 
@@ -95,9 +111,9 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo sh -c 'echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-17 main" >> /etc/apt/sources.list'
-        sudo sh -c 'echo "deb-src http://apt.llvm.org/focal/ llvm-toolchain-focal-17 main" >> /etc/apt/sources.list'
-        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        # 2026-10-09: 移除 focal 版 LLVM 源 —— 宿主是 ubuntu-22.04(jammy), 混入 focal 源会让 apt 解析到错误版本;
+        # install 列表里没有任何 llvm-* 包, .config 也无 LLVM/CLANG 开关, 该源属历史残留。
+        # (另: apt-key 已废弃, 删掉顺带消掉一条 deprecation 噪音)
         sudo apt-get update
         sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler ecj fakeroot fastjar flex gawk gettext genisoimage git gnutls-dev gperf haveged help2man intltool irqbalance jq libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lrzsz msmtp nano ninja-build p7zip p7zip-full patch pkgconf libpython3-dev python3 python3-pip python3-cryptography python3-docutils python3-ply python3-pyelftools python3-requests qemu-utils quilt re2c rsync rename scons sharutils squashfs-tools subversion swig texinfo uglifyjs unzip vim wget xmlto zlib1g-dev zstd xxd
         sudo apt-get clean
@@ -119,10 +135,31 @@ jobs:
         echo "PATH1=${GITHUB_WORKSPACE}/openwrt/build/${{matrix.target}}" >> $GITHUB_ENV
  
     - name: 加载设置
+      env:
+        # 2026-10-09: OpenClash 面板密码不再入库(public 仓库里明文=已泄露) —— 构建时注入:
+        # 仓库 secret OPENCLASH_DASH_PASS 优先; 未配置则本次随机生成(可在路由器上 uci get 读取)
+        OC_PASS_SECRET: ${{ secrets.OPENCLASH_DASH_PASS }}
       run: |
         echo "Compile_Date=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+        OC_CFG="${GITHUB_WORKSPACE}/build/${{matrix.target}}/files/etc/config/openclash"
+        if [ -f "$OC_CFG" ]; then
+          if [ -n "$OC_PASS_SECRET" ]; then
+            OC_PASS="$OC_PASS_SECRET"
+            echo "== OpenClash 面板密码: 取自 secret OPENCLASH_DASH_PASS =="
+          else
+            OC_PASS="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-12)"
+            echo "== OpenClash 面板密码: 本次随机生成(路由器上 uci get openclash.@config[0].dashboard_password 查看) =="
+          fi
+          grep -q 'option dashboard_password' "$OC_CFG" || { echo "!! openclash 配置缺少 dashboard_password 锚点"; exit 1; }
+          sed -i "s|^\(\s*option dashboard_password\).*|\1 '${OC_PASS}'|" "$OC_CFG"
+          grep -q "option dashboard_password '${OC_PASS}'" "$OC_CFG" || { echo "!! OpenClash 面板密码注入失败(secret 含特殊字符? 请用纯字母数字)"; exit 1; }
+          grep -q 'CHANGE_ME_BUILD_TIME' "$OC_CFG" && { echo "!! openclash 配置残留占位密码"; exit 1; }
+          echo "== OpenClash 面板密码注入完成 =="
+        fi
         cp -Rf `find ./ -maxdepth 1 -type d ! -path './openwrt' ! -path './.git' ! -path './'` openwrt
         mv -f "${Home}"/build/common/*.sh "${PATH1}"
+        # 2026-10-09: feeds 之后的修补统一在 post-feeds.sh(单一定义, 幂等); 未就位即中止, 不留静默缺口
+        [ -f "${PATH1}/post-feeds.sh" ] || { echo "!! post-feeds.sh 未随 build/common/*.sh 就位"; exit 1; }
         source "${PATH1}/common.sh" && Diy_settings
         [[ "${{ github.event.inputs.ssh }}" == 'ssh' ]] && echo "SSHYC=true" >> $GITHUB_ENV
         cd openwrt
@@ -138,65 +175,37 @@ jobs:
         source "${PATH1}/common.sh" && Diy_all
         /bin/bash "${PATH1}/$DIY_PART_SH"
         ./scripts/feeds update -a
-        # fix: argon +@wget-any dep not found in LEDE openwrt-25.12
-        find feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+@wget-any //g' {} + 2>/dev/null || true
-        find feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+wget-any //g' {} + 2>/dev/null || true
-        # fix: 概览页添加编译日期（10_system.js）
-        BUILD_DATE=$(echo "${Compile_Date}" | perl -pe 's/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/$1.$2.$3 $4:$5/')
-        # 2026-09-06: 幂等注入 — 先 sed 清旧行再 perl 注入(146/260 两处执行也只留一份); 日期/作者分行显示
-        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec sed -i "/_('Firmware Date')/d;/_('Firmware Author')/d" {} + 2>/dev/null || true
-        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\\n\\t\\t_('Firmware Date'), '${BUILD_DATE}',\\n\\t\\t_('Firmware Author'), 'Lul1a8y',/ }" {} + 2>/dev/null || true
-        # 2026-09-06: 固件版本钉死 lede 风格(模板级, 不依赖 zzz 首次开机/配置保留; R26.05.20=lede 上游版本号, 上游 bump 需同步)
-        sed -i "s/^DISTRIB_ID='%D'\$/DISTRIB_ID='LEDE'/; s/^DISTRIB_RELEASE='%V'\$/DISTRIB_RELEASE='R26.05.20'/; s/^DISTRIB_REVISION='%R'\$/DISTRIB_REVISION='R26.05.20'/; s|^DISTRIB_DESCRIPTION='%D %V %C'\$|DISTRIB_DESCRIPTION='LEDE '|" package/base-files/files/etc/openwrt_release
-        sed -i "s/^NAME=\"%D\"\$/NAME=\"LEDE\"/; s/^VERSION=\"%V\"\$/VERSION=\"R26.05.20\"/; s/^PRETTY_NAME=\"%D %V\"\$/PRETTY_NAME=\"LEDE R26.05.20\"/; s/^BUILD_ID=\"%R\"\$/BUILD_ID=\"R26.05.20\"/; s|^OPENWRT_RELEASE=\"%D %V %C\"\$|OPENWRT_RELEASE=\"LEDE R26.05.20\"|" package/base-files/files/usr/lib/os-release
-        grep -q "DISTRIB_DESCRIPTION='LEDE '" package/base-files/files/etc/openwrt_release || { echo "!! openwrt_release 版本钉死未生效"; exit 1; }
-        grep -q 'OPENWRT_RELEASE="LEDE R26.05.20"' package/base-files/files/usr/lib/os-release || { echo "!! os-release 版本钉死未生效"; exit 1; }
-        # 2026-09-04: AutoUpdate init 加固 — 必须在 feeds update 之后执行(feeds 树更新会还原文件)
-        # 症状: 开机 S99autoupdate 报 "uci: Entry not found" + "can't open '/etc/openwrt_update'"
-        # 修复: uci -q 容错 + 配置补 option github + 预置 /etc/openwrt_update
-        AU_DIR="feeds/luci/applications/luci-app-autoupdate"
-        if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
-          sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR/root/etc/init.d/autoupdate"
-          sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
-          printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR/root/etc/openwrt_update"
-        fi
+        # 2026-10-09: 原先内联在这里的 argon/编译日期/版本钉死/AutoUpdate加固 已合并到 post-feeds.sh
+        # (与「修复缓存覆盖」曾是两份重复文本; 该文件幂等, 两处调用同一份定义)
+        bash "${PATH1}/post-feeds.sh"
         ./scripts/feeds install -a > /dev/null 2>&1
         ./scripts/feeds install -a -f
-        # 2026-09-04: 移除 defconfig 自动带入的 vsftpd(FTP) 源(luci.mk i18n DEFAULT 链)
-        # → 网络存储菜单多出 FTP 服务器；删源+删 install 软链
-        rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
-        rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
-        # 2026-09-05: 修 mosdns stats_api —— 第一版(6d1eb4f)删错对象, run 33945234196 实测仍崩
-        # feeds install -a -f 日志铁证: "Overriding core package 'mosdns' with version from helloworld"
-        # 真正顶掉 kenzok8/small 带 stats_api 补丁版(5.3.4-r12, patches 216-222)的是 helloworld
-        # feed(fw876/helloworld, 5.3.4-1 仅 203-205 补丁, 无 stats_api)——旧删 coolsnowwolf
-        # feeds/packages/net/mosdns 只删了已被 -f 覆盖的输家副本, 固件仍编 feeds/helloworld/mosdns
-        # 原版 → luci-app-mosdns v1.7.12 默认生成 stats_collector{type:stats_api} → 开机 FATAL
-        # "plugin type stats_api not defined" crash loop (02:42 与 16:04 开机日志两次实测)
-        # diy-part.sh 里的 rm 跑在第140行第二次 feeds update -a 之前, 会被还原, 必须在此删
-        # 修: feeds install 之后删光 coolsnowwolf + helloworld 三处原版源(diy 克隆的
-        # package/helloworld/mosdns 一并删), 全树只留 kenzok8-small/mosdns → defconfig 唯一命中
-        rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
-        rm -rf feeds/helloworld/mosdns package/feeds/helloworld/mosdns package/helloworld/mosdns
-        # 自检(防静默回归): mosdns 引擎源必须只剩 kenzok8-small(≥r12) 且 stats_api 补丁在位
-        # 版本不写死: 2026-09-05 晚 kenzok8/small 上游迭代到 r13, 写死 =12 曾误杀编译(run 33976091902)
-        if grep -qE '^CONFIG_PACKAGE_(mosdns|luci-app-mosdns)=y' "$PATH1/$CONFIG_FILE" 2>/dev/null; then
-          MOSDNS_LEFT="$(find feeds package -maxdepth 6 -type f -path '*/mosdns/Makefile' 2>/dev/null)"
-          if [ "$(printf '%s\n' "$MOSDNS_LEFT" | grep -c .)" != "1" ] || ! printf '%s\n' "$MOSDNS_LEFT" | grep -q '/kenzok8-small/mosdns/Makefile'; then
-            echo "!! mosdns 源残留或缺失(应只剩 kenzok8-small/mosdns): $MOSDNS_LEFT"; exit 1
-          fi
-          REL_NUM="$(sed -n 's/^PKG_RELEASE:=\([0-9][0-9]*\)$/\1/p' "$MOSDNS_LEFT")"
-          case "$REL_NUM" in
-            ''|*[!0-9]*) echo "!! mosdns 版本无法解析: $(grep -E 'PKG_VERSION|PKG_RELEASE' "$MOSDNS_LEFT" | tr '\n' ' ')"; exit 1 ;;
-          esac
-          [ "$REL_NUM" -ge 12 ] || { echo "!! mosdns 版本过旧(需 kenzok8-small r12+, 实际 r$REL_NUM): $(grep -E 'PKG_VERSION|PKG_RELEASE' "$MOSDNS_LEFT" | tr '\n' ' ')"; exit 1; }
-          [ -f "$(dirname "$MOSDNS_LEFT")/patches/216-plugin-add-stats_api-plugin.patch" ] || { echo "!! mosdns 缺 stats_api 补丁(216)"; exit 1; }
-          echo "== mosdns 源已锁定 kenzok8-small r$REL_NUM (stats_api 补丁在位) =="
-        fi
         mv "$PATH1/$CONFIG_FILE" .config
+        # 2026-10-09: .config 就位后再跑一次 post-feeds.sh —— 补 .config 里 vsftpd/clashoo 反选,
+        # 并再防一次 feeds install -a -f 把 feed 源码还原(函数内所有操作幂等)
+        bash "${PATH1}/post-feeds.sh"
+
         if [[ "${REGULAR_UPDATE}" == "true" ]]; then
           source "${PATH1}/upgrade.sh" && Diy_Part1
         fi
+
+    - name: 记录构建来源
+      run: |
+        # 2026-10-09: 记录本例固件的可追溯信息(随 release 一起发布, 事后可核对源码/配置)
+        cd openwrt
+        {
+          echo "AutoBuild-OpenWrt commit: ${GITHUB_SHA}"
+          echo "workflow run: ${Github}/actions/runs/${{ github.run_id }}"
+          echo "Compile_Date: ${Compile_Date}   FIRMWARE_VER: ${FIRMWARE_VER}"
+          echo "config sha256: $(sha256sum .config | awk '{print $1}')"
+          echo "lede commit: $(git rev-parse HEAD) ($(git log -1 --format=%cI))"
+          echo "--- feeds / 第三方源 commit ---"
+          for d in feeds/* package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-autoupdate; do
+            [ -d "$d/.git" ] || continue
+            echo "$d: $(git -C "$d" rev-parse HEAD 2>/dev/null)"
+          done
+        } > "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt"
+        cat "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt"
 
     - name: 生成配置
       run: |
@@ -235,78 +244,44 @@ jobs:
         cat /proc/cpuinfo | grep "cpu cores" | uniq >> CPU
         sed -i 's|[[:space:]]||g; s|^.||' CPU && sed -i 's|CPU||g; s|pucores:||' CPU
         CPUNAME="$(awk 'NR==1' CPU)" && CPUCORES="$(awk 'NR==2' CPU)"
-        curl -k --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=🔔 您正在使用【${CPUNAME} CPU】【${CPUCORES}核心】【${CODE}】源码 编译固件中,请耐心等待...... ⏳" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+        curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=🔔 您正在使用【${CPUNAME} CPU】【${CPUCORES}核心】【${CODE}】源码 编译固件中,请耐心等待...... ⏳" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          || echo "::warning::电报通知发送失败(不影响固件与发布)"
 
     - name: 加载缓存
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         # 2026-09-04: 原整树缓存(openwrt/)编译后 >10GB 超 GitHub cache 单条上限 → 保存必失败;
         # key 的 hashFiles('**/openwrt/Makefile') 因 openwrt 是 symlink 恒空 → restore 永远 miss
-        # → 每次 3-4h 冷编。改为只缓存 dl/(源码包) + staging_dir/(toolchain+编译产物),
-        # 用真实路径 /<target>/openwrt 避开 symlink; 固定 key 保证恢复命中。
+        # → 每次 3-4h 冷编。改为只缓存 dl/(源码包) + staging_dir/(toolchain+编译产物), 用真实路径避开 symlink。
+        # 2026-10-09: key 增加 .config/settings.ini 指纹(固定 key 会让旧缓存永不失效; hashFiles 必须写显式路径,
+        # 点开头的 .config 不会被 ** 通配到); 另加 restore-keys 前缀 → 指纹变化时仍能部分命中, 不必从零下 dl。
+        # 刻意不把源码 commit 放进 key: 上游每次 bump 都会全冷编(冷编 5h21m 已逼近 6h 上限)。
         path: |
           /${{ matrix.target }}/openwrt/dl
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-cache
-        
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target)) }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.target }}-openwrt-
+
+    - name: 判断缓存复用
+      id: cachecheck
+      run: |
+        # 2026-10-09: 用 staging_dir/toolchain 是否真实存在判断"可增量", 不再只认 cache-hit 输出
+        # (指纹 key 变化时是 restore-keys 部分命中: cache-hit=false 但 toolchain 其实可用 → 不该走冷编保险路径)
+        if ls /${{ matrix.target }}/openwrt/staging_dir/toolchain-* >/dev/null 2>&1; then
+          echo "hit=true" >> $GITHUB_OUTPUT
+          echo "== staging_dir/toolchain 已恢复 → 增量编译 =="
+        else
+          echo "hit=false" >> $GITHUB_OUTPUT
+          echo "== 未发现 toolchain → 冷编保险路径 =="
+        fi
     - name: 修复缓存覆盖
       run: |
         cd openwrt
-        # 2026-09-04: 缓存已改为只存 dl+staging_dir(不再覆盖源码树/.config/package/feeds),
-        # 下方 argon/date/AU/mosdns/vsftpd 重放为兼容旧整树缓存配置的保险, 均幂等无害
-        # fix: argon +@wget-any dep not found in LEDE openwrt-25.12
-        # 构建缓存恢复会覆盖 feeds update 后的 sed 修改
-        # 必须在缓存恢复之后、编译之前再次执行 sed
-        find feeds/luci package/feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+@wget-any //g' {} + 2>/dev/null || true
-        find feeds/luci package/feeds/luci package/kenzok8 -path '*/luci-theme-argon/Makefile' -exec sed -i 's/+wget-any //g' {} + 2>/dev/null || true
-        echo "argon Makefile dep check:"
-        grep -r 'LUCI_DEPENDS' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/null || echo "argon Makefile not found"
-        # fix: 概览页添加编译日期（10_system.js，缓存恢复后需重新执行）
-        BUILD_DATE=$(echo "${Compile_Date}" | perl -pe 's/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/$1.$2.$3 $4:$5/')
-        # 2026-09-06: 幂等注入 — 先 sed 清旧行再 perl 注入(146/260 两处执行也只留一份); 日期/作者分行显示
-        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec sed -i "/_('Firmware Date')/d;/_('Firmware Author')/d" {} + 2>/dev/null || true
-        find feeds/luci package/feeds/luci -path '*/status/include/10_system.js' -exec perl -i -pe "if (/Kernel Version/ && /boardinfo\.kernel/) { s/\$/\\n\\t\\t_('Firmware Date'), '${BUILD_DATE}',\\n\\t\\t_('Firmware Author'), 'Lul1a8y',/ }" {} + 2>/dev/null || true
-        # 2026-09-06: 固件版本钉死 lede 风格(缓存恢复会还原源码树, 需重放; R26.05.20=lede 上游版本号, 上游 bump 需同步)
-        sed -i "s/^DISTRIB_ID='%D'\$/DISTRIB_ID='LEDE'/; s/^DISTRIB_RELEASE='%V'\$/DISTRIB_RELEASE='R26.05.20'/; s/^DISTRIB_REVISION='%R'\$/DISTRIB_REVISION='R26.05.20'/; s|^DISTRIB_DESCRIPTION='%D %V %C'\$|DISTRIB_DESCRIPTION='LEDE '|" package/base-files/files/etc/openwrt_release
-        sed -i "s/^NAME=\"%D\"\$/NAME=\"LEDE\"/; s/^VERSION=\"%V\"\$/VERSION=\"R26.05.20\"/; s/^PRETTY_NAME=\"%D %V\"\$/PRETTY_NAME=\"LEDE R26.05.20\"/; s/^BUILD_ID=\"%R\"\$/BUILD_ID=\"R26.05.20\"/; s|^OPENWRT_RELEASE=\"%D %V %C\"\$|OPENWRT_RELEASE=\"LEDE R26.05.20\"|" package/base-files/files/usr/lib/os-release
-        grep -q "DISTRIB_DESCRIPTION='LEDE '" package/base-files/files/etc/openwrt_release || { echo "!! openwrt_release 版本钉死未生效(重放)"; exit 1; }
-        grep -q 'OPENWRT_RELEASE="LEDE R26.05.20"' package/base-files/files/usr/lib/os-release || { echo "!! os-release 版本钉死未生效(重放)"; exit 1; }
-        # 2026-09-11: luci rpcd ucode 正则修正重放 — 缓存恢复会还原 feeds 源码树
-        # (ucode regex flag 只有 g/i/s 且 s=清 REG_NEWLINE; 加 m 会让整个 ucode 解析失败
-        #  → rpcd 里 luci 对象消失 → LuCI 报 -32000 Object not found。详见 diy-part.sh 同处注释)
-        LUCI_RPC_LUCI_R="feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
-        if [ -f "$LUCI_RPC_LUCI_R" ]; then
-          sed -i 's#\$/sm#\$/#g; s#\$/s#\$/#g' "$LUCI_RPC_LUCI_R"
-          # 自检(2026-09-20 改负向断言, 同 diy-part.sh 处: 不绑定上游字面量)
-          if grep -qE '\$/[a-z]*[sm]' "$LUCI_RPC_LUCI_R"; then
-            echo "!! luci rpcd ucode 残留 s/m flag(重放, 同 diy-part.sh 判定), 中止"; exit 1
-          fi
-          grep -q 'getFeatures' "$LUCI_RPC_LUCI_R" || { echo "!! luci getFeatures 段缺失(重放/上游漂移)"; exit 1; }
-          echo "== luci getFeatures 正则修正重放完成 =="
-        fi
-        # 2026-09-04: 缓存恢复会带回 vsftpd/clashoo 源 + .config 勾选 → 再次移除/反选
-        # (防 defconfig 通过 luci.mk/kenzok8 i18n DEFAULT 链自动带入)
-        rm -rf feeds/luci/applications/luci-app-vsftpd feeds/packages/net/vsftpd
-        rm -rf package/feeds/luci/luci-app-vsftpd package/feeds/packages/vsftpd
-        rm -rf package/kenzok8-small/clashoo package/kenzok8-small/luci-app-clashoo
-        sed -i '/CONFIG_PACKAGE_luci-app-vsftpd=y/d;/CONFIG_PACKAGE_vsftpd=y/d;/CONFIG_PACKAGE_luci-i18n-vsftpd-zh-cn=y/d;/CONFIG_PACKAGE_luci-app-clashoo=y/d;/CONFIG_PACKAGE_clashoo=y/d;/CONFIG_PACKAGE_luci-i18n-clashoo-zh-cn=y/d' .config 2>/dev/null || true
-        # 2026-09-05: 旧整树缓存会带回 feeds 的 mosdns(无 stats_api) → 重放删除, 保留 kenzok8/small 带补丁版
-        # (含 helloworld 源: run 33945234196 实测原版来自 feeds/helloworld, -f 覆盖 coolsnowwolf)
-        rm -rf feeds/packages/net/mosdns package/feeds/packages/mosdns
-        rm -rf feeds/helloworld/mosdns package/feeds/helloworld/mosdns package/helloworld/mosdns
-        # 缓存恢复会带回旧 luci-app-mosdns init(带 log.size 键) → 重放剥离
-        MOSDNS_INIT_R="$(find package/kenzok8-small -path '*/init.d/mosdns' -print -quit 2>/dev/null)"
-        if [ -n "$MOSDNS_INIT_R" ] && [ -f "$MOSDNS_INIT_R" ]; then
-          sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT_R"
-        fi
-        # 缓存恢复同样会带回未加固的 autoupdate 源 → 重放加固
-        AU_DIR_R="feeds/luci/applications/luci-app-autoupdate"
-        if [ -d "$AU_DIR_R" ] && [ -f "$AU_DIR_R/root/etc/init.d/autoupdate" ]; then
-          sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR_R/root/etc/init.d/autoupdate"
-          sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR_R/root/etc/config/autoupdate" 2>/dev/null || true
-          printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR_R/root/etc/openwrt_update"
-        fi
+        # 2026-10-09: 与「加载设置」共用同一份修补定义(post-feeds.sh), 幂等; 缓存恢复会还原源码树
+        bash "${PATH1}/post-feeds.sh"
+
 
     - name: 下载dl库
       id: package
@@ -333,7 +308,8 @@ jobs:
         gcc --version | head -1
         ld --version | head -1
         ls -la staging_dir/host/bin/gcc 2>/dev/null || echo '(host gcc 尚未创建)'
-        if [ "${{ steps.cache.outputs.cache-hit }}" == "true" ]; then
+        # 2026-10-09: 判断依据从 cache-hit 改为 cachecheck(staging_dir/toolchain 是否真实存在)
+        if [ "${{ steps.cachecheck.outputs.hit }}" == "true" ]; then
           echo '== 缓存命中: toolchain 直接复用, 增量编译 =='
           make -j$(nproc) || {
             echo '== 增量失败, 降级: 清 go-mod-cache+musl sysroot 走保险路径 =='
@@ -357,16 +333,71 @@ jobs:
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
         echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
         
+    - name: 构建产物自检
+      if: env.status == 'success'
+      run: |
+        # 2026-10-09: 只对"我们自己写入的保证"做硬断言(版本字面量 / luci flag / i915 模块 / Firmware Date 行数);
+        # 纯结构性假设(路径是否存在)只告警不判失败 —— 免得上游目录结构变化时误杀一次 5h+ 的编译
+        cd openwrt
+        ROOTDIR="$(ls -d build_dir/target-*/root-* 2>/dev/null | head -1)"
+        if [ -z "$ROOTDIR" ]; then
+          echo "::warning::未找到 build_dir/target-*/root-* 目录, 跳过产物自检"
+          exit 0
+        fi
+        echo "== 产物自检 root: $ROOTDIR =="
+        REL="$ROOTDIR/etc/openwrt_release"; OSR="$ROOTDIR/usr/lib/os-release"
+        if [ -f "$REL" ]; then
+          grep -q "DISTRIB_RELEASE='${FIRMWARE_VER}'" "$REL" || { echo "!! 产物 openwrt_release 版本未钉死为 ${FIRMWARE_VER}"; exit 1; }
+        else
+          echo "::warning::产物缺 $REL, 跳过版本断言"
+        fi
+        if [ -f "$OSR" ]; then
+          grep -q "OPENWRT_RELEASE=\"LEDE ${FIRMWARE_VER}\"" "$OSR" || { echo "!! 产物 os-release 版本未钉死为 ${FIRMWARE_VER}"; exit 1; }
+        else
+          echo "::warning::产物缺 $OSR, 跳过版本断言"
+        fi
+        LUCI_UC="$ROOTDIR/usr/share/rpcd/ucode/luci"
+        if [ -f "$LUCI_UC" ]; then
+          if grep -qE '\$/[a-z]*[sm]' "$LUCI_UC"; then
+            echo "!! 产物 luci ucode 残留 s/m flag(会导致 LuCI -32000 Object not found)"; exit 1
+          fi
+          grep -q 'getFeatures' "$LUCI_UC" || { echo "!! 产物 luci ucode 缺 getFeatures 段"; exit 1; }
+          echo "== 产物 luci ucode flag OK =="
+        else
+          echo "::warning::产物内未找到 rpcd/ucode/luci(上游结构变化?)"
+        fi
+        if grep -q '^CONFIG_DRM_I915=m' .config; then
+          if find "$ROOTDIR/lib/modules" -name 'i915.ko*' -print -quit 2>/dev/null | grep -q .; then
+            echo "== i915 以模块打包 OK(开机卡 64s 的修复仍在) =="
+          else
+            echo "!! .config 要求 CONFIG_DRM_I915=m 但产物缺 i915.ko(开机可能卡 64s)"; exit 1
+          fi
+        else
+          echo "::warning::.config 未设 CONFIG_DRM_I915=m, 未校验 i915 模块"
+        fi
+        JSN="$(find "$ROOTDIR" -path '*status/include/10_system.js' -print -quit 2>/dev/null)"
+        if [ -n "$JSN" ]; then
+          CNT="$(grep -c 'Firmware Date' "$JSN" || true)"
+          if [ "$CNT" = "1" ]; then
+            echo "== 概览页 Firmware Date 注入恰好 1 处 =="
+          else
+            echo "!! 概览页 Firmware Date 注入异常(出现 ${CNT} 次, 应为 1 次)"; exit 1
+          fi
+        else
+          echo "::warning::产物内未找到 10_system.js, 跳过概览页注入检查"
+        fi
+        echo "== 产物自检通过 =="
+
     - name: 上传配置
       if: env.UPLOAD_CONFIG == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: .config_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
         path: config.txt
         
     - name: 上传文件
       if: env.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: filename+ipk_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
         path: openwrt/bin            
@@ -382,16 +413,19 @@ jobs:
         df -hT $PWD
         cp -Rf bin/targets/*/* "${Home}"/upgrade
         cd bin/targets/*/*
-        find . \( -name "*buildinfo*" -o -name "*sha256sums*" -o -name "*manifest*" -o -name "*vmlinuz*" -o -name "*Image*" -o -name "*rootfs.img.gz*" -o -name "*kernel.bin*" \) -exec rm -rf {} +
+        # 2026-10-09: 保留 *sha256sums*/*manifest*/*buildinfo*(体积小, 发布后可核对校验和与包清单);
+        # 原先一并删除 → release 里没有任何可校验文件。仅继续剔除重复的大体积镜像。
+        find . \( -name "*vmlinuz*" -o -name "*Image*" -o -name "*rootfs.img.gz*" -o -name "*kernel.bin*" \) -exec rm -rf {} +
         rm -rf packages
         rename -v "s/^openwrt/${{ env.date1 }}-${{ env.CODE }}/" *
+        [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "BOT=TRUE" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_ENV
         
     - name: 上传固件
       if: env.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ env.OpenWrt_name }}-${{ env.CODE }}-${{ env.TARGET_PROFILE }}-firmware-${{ env.Compile_Date }}
         path: ${{ env.FIRMWARE }}
@@ -404,7 +438,7 @@ jobs:
         OPENCLASH_VER=$(grep -r "OPENCLASH_VERSION" openwrt/package/openclash/luci-app-openclash/Makefile 2>/dev/null | egrep -o "[0-9]+\.[0-9]+\.[0-9]+[^']*" | head -1)
         echo "## $(date +"%Y.%m.%d") OpenWrt x86 固件更新" > update_log.txt
         echo "" >> update_log.txt
-        echo "- x86 固件版本：**R$(date +"%y.%m.%d")** 内核版本：**${KERNEL_FULL:-${KERNEL_VER}}**" >> update_log.txt
+        echo "- x86 固件版本：**${FIRMWARE_VER}** 内核版本：**${KERNEL_FULL:-${KERNEL_VER}}**" >> update_log.txt
         echo "- 1.软件同步到固件编译当天 OpenClash 更新至 v${OPENCLASH_VER:-latest}" >> update_log.txt
         echo "- 2.此版本的 LuCI 为 23.05 与之前的 18.06 不兼容，不能留配置升级，建议重装重新设置" >> update_log.txt
         echo "- **PVE虚拟** 平台 下载 **combined-efi.img** 镜像 然后在PVE下用命令 `qm importdisk 虚拟机编号 /var/lib/vz/template/iso/镜像文件.img local openwrt` 进行转换即可" >> update_log.txt
@@ -424,9 +458,12 @@ jobs:
         echo "| ---- | ---- | ---- | ---- |" >> update_log.txt
         echo "| 192.168.50.2 | root | password | 12306 |" >> update_log.txt
         echo "" >> update_log.txt
+        echo "> OpenClash 控制面板密码不再写死在仓库: 构建时由 secret OPENCLASH_DASH_PASS 注入, 未配置则随机生成 — 可在路由器执行 uci get openclash.@config[0].dashboard_password 查看" >> update_log.txt
+        echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt" >> update_log.txt
+        echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.REPO_TOKEN
-      uses: ncipollo/release-action@v1
+      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true'
+      uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
       with:
         name: ${{ env.CODE }}-${{ env.TARGET_PROFILE }}
         tag: ${{ env.date }}
@@ -439,10 +476,19 @@ jobs:
       run: |
        cd openwrt
        source "${PATH1}/upgrade.sh" && Diy_Part3
+       # 2026-10-09: 为 AutoUpdate 通道的固件生成完整 SHA256 清单(<固件>.sha256)
+       # 设备端 AutoUpdate.sh 优先用它做 64 位全量校验; 旧发布没有该文件时回落到文件名片段校验
+       cd "${Home}/bin/Firmware"
+       for f in *; do
+         [ -f "$f" ] || continue
+         case "$f" in *.sha256) continue ;; esac
+         sha256sum "$f" > "$f.sha256"
+       done
+       ls -l
         
     - name: 云端更新2
-      if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.REPO_TOKEN
-      uses: svenstaro/upload-release-action@v2
+      if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.HAS_REPO_TOKEN == 'true'
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
       with:
         repo_token: ${{ secrets.REPO_TOKEN }}
         file: openwrt/bin/Firmware/*
@@ -455,11 +501,16 @@ jobs:
       run: |
         mkdir -p Github_Tags
         cd Github_Tags
-        wget -q --no-cookie --no-check-certificate https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
+        # 2026-10-09: 先按严格 TLS 取, 失败才回退 --no-check-certificate 并显式告警(不再默认跳过证书校验)
+        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags; then
+          echo "::warning::GitHub API 严格 TLS 拉取失败, 回退 --no-check-certificate 重试"
+          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
+        fi
+        [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
         
     - name: 云端更新4
-      if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.REPO_TOKEN
-      uses: svenstaro/upload-release-action@v2
+      if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.HAS_REPO_TOKEN == 'true'
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
       with:
         repo_token: ${{ secrets.REPO_TOKEN }}
         file: Github_Tags/*
@@ -470,4 +521,5 @@ jobs:
     - name: 电报通知
       if: env.status == 'success' && env.SERVERCHAN_SCKEY == 'true'
       run: |
-        curl -k --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件(${{env.CangKu}}仓库的#${{env.Run_number}}号)顺利编译完成了！💐" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+        curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件(${{env.CangKu}}仓库的#${{env.Run_number}}号)顺利编译完成了！💐" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          || echo "::warning::电报通知发送失败(不影响固件与发布)"

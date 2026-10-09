@@ -24,6 +24,24 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 | ---- | ---- | ---- | ---- |
 | 192.168.50.2 | root | password | 12306 |
 
+**注意：默认 root 密码是上游 lede 的默认值 `password`，未做修改 —— 首次登录后请立即改掉。**
+
+**构建期注入与可追溯（2026-10-09 起）**
+
+- **OpenClash 控制面板密码不再写死在仓库里**：构建时注入。仓库 secret `OPENCLASH_DASH_PASS` 优先，未配置则每次构建随机生成。
+  在路由器上查看方式：`uci get openclash.@config[0].dashboard_password`
+- 每次构建的 release 里附带 **`BUILD_SOURCE.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、`.config` 的 sha256，便于事后核对。
+- 固件版本号在 `.github/workflows/compile-openwrt.yml` 的 `FIRMWARE_VER`（单一来源），上游 bump 时只改这一处。
+- release 里保留 `*sha256sums*` / `*manifest*` / `*buildinfo*`，可用于校验与包清单核对。
+
+**仓库 secret**
+
+| secret | 用途 | 必填 |
+| ---- | ---- | ---- |
+| `REPO_TOKEN` | 发布 release / 云端更新（repo 级 PAT） | 是 |
+| `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 构建通知 | 否 |
+| `OPENCLASH_DASH_PASS` | OpenClash 面板密码（不配置则随机生成） | 否 |
+
 **固件特性**
 
 - 源码：coolsnowwolf/lede master 分支
