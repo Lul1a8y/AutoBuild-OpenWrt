@@ -226,8 +226,6 @@ wget -q --timeout=30 --tries=1 ${Github_Tags} -O ${Download_Tags} > /dev/null 2>
 if [[ $? -ne 0 ]];then
 	wget -q --timeout=60 --tries=3 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
 	if [[ $? -ne 0 ]];then
-	fi
-	if [[ $? -ne 0 ]];then
 		TIME r "获取固件版本信息失败,请检测网络,或者您更改的Github地址为无效地址,或者您的仓库是私库,或者发布已被删除!"
 		echo
 		exit 1
@@ -334,6 +332,20 @@ cd ${Download_Path}
 		fi
 	fi
 }
+# 2026-10-09: 若发布里附带 <固件>.sha256 清单, 先用完整 SHA256 校验固件
+# (下面基于"文件名 12 位片段"的校验只能防传输损坏: 文件与文件名一起被换就失效)
+SideCar="${Firmware}.sha256"
+if wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null && [ -s "${Download_Path}/${SideCar}" ]; then
+	EXPECT_SHA="$(awk '{print $1}' "${Download_Path}/${SideCar}")"
+	ACTUAL_SHA="$(sha256sum "${Download_Path}/${Firmware}" | awk '{print $1}')"
+	if [ -n "${EXPECT_SHA}" ] && [ "${EXPECT_SHA}" != "${ACTUAL_SHA}" ]; then
+		TIME r "完整SHA256校验失败,固件可能被替换或损坏,已中止!"
+		echo
+		exit 1
+	else
+		TIME g "完整SHA256校验通过"
+	fi
+fi
 export CLOUD_MD5=$(md5sum ${Firmware} | cut -c1-4)
 export CLOUD_256=$(sha256sum ${Firmware} | cut -c4-11)
 export MD5_256=$(echo ${Firmware} | egrep -o "[a-zA-Z0-9]+${Firmware_SFX}" | sed -r "s/(.*)${Firmware_SFX}/\1/")
