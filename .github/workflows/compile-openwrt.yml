@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   # 2026-10-09: 移除 push 触发器 —— 原来只挂在一个死路径(build/Tianling_source/start-up/start,
   # 该源不在 matrix 里), 等于「改了它白烧一次 5h 编译」的陷阱。去掉后提交代码不会意外触发编译,
-  # 构建走手动 dispatch + 下面每 2 天的定时。若要「提交即编译」, 把 paths 指向真实输入
+  # 构建走手动 dispatch + 下面每 2 个月(奇数月 1 号 17:00 UTC)的定时, 节奏见 292045f。若要「提交即编译」, 把 paths 指向真实输入
   # (build/Lede_source/** 或 build/common/**) 再加回 push: 段。
 
   schedule:
