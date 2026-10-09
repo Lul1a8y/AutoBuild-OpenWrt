@@ -150,6 +150,10 @@ jobs:
             OC_PASS="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-12)"
             echo "== OpenClash 面板密码: 本次随机生成(路由器上 uci get openclash.@config[0].dashboard_password 查看) =="
           fi
+          # 密码必须是纯字母数字(否则 sed 的 | 分隔符/& 展开会写坏配置行; 随机生成的值天然满足)
+          case "$OC_PASS" in
+            *[!A-Za-z0-9]*) echo "!! OpenClash 面板密码只允许字母数字 —— 请把 secret OPENCLASH_DASH_PASS 改成纯字母数字"; exit 1 ;;
+          esac
           grep -q 'option dashboard_password' "$OC_CFG" || { echo "!! openclash 配置缺少 dashboard_password 锚点"; exit 1; }
           sed -i "s|^\(\s*option dashboard_password\).*|\1 '${OC_PASS}'|" "$OC_CFG"
           grep -q "option dashboard_password '${OC_PASS}'" "$OC_CFG" || { echo "!! OpenClash 面板密码注入失败(secret 含特殊字符? 请用纯字母数字)"; exit 1; }
