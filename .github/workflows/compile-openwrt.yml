@@ -464,7 +464,7 @@ jobs:
         echo "| ---- | ---- | ---- | ---- |" >> update_log.txt
         echo "| 192.168.50.2 | root | password | 12306 |" >> update_log.txt
         echo "" >> update_log.txt
-        echo "> OpenClash 控制面板密码不再写死在仓库: 构建时由 secret OPENCLASH_DASH_PASS 注入, 未配置则随机生成 — 可在路由器执行 uci get openclash.@config[0].dashboard_password 查看" >> update_log.txt
+        echo "> OpenClash 控制面板密码不再写死在仓库: 构建时由 secret OPENCLASH_DASH_PASS 注入, 未配置则随机生成 — 可在路由器执行 \`uci get openclash.@config[0].dashboard_password\` 查看" >> update_log.txt
         echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
