@@ -1,20 +1,25 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
-# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.6 + 编译时间 + 网口修复
+# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.18(测试分支 kernel-6.18-test) + 编译时间 + 网口修复
 # 更新日期: 2026-09-03
 # 修复: mosdns feeds冲突(删旧版5.3.4-1→剩5.3.4-5) + AGH禁用自启动 + 编译时间精确到时分
 # 2026-09-03: 补拉 geo2txt — luci-app-mosdns v1.7.12 新依赖，kenzok8/small 漏同步，9/2 编译在此失败
 # 2026-09-03: 克隆全部 depth 1 + 末尾源码完整性检查（9/2 OpenClash 克隆超时被静默丢弃的教训）
 
-# ===== 内核锁定 6.6 LTS =====
-# 2026-09-11 修正: 上游 9/6 把 x86 默认内核从 6.12 改成 6.18 → 原来写死 "6.12" 的锚点
-# 静默失配(0 次替换、无任何报错) → 9/11 固件掉到 linux-6.18.49(用户预期 6.6.156)
-# 改为「匹配任意版本再钉回 6.6」+ 自检: 上游以后再 bump(6.20/7.x) 也不会静默漂移,
-# 且 pin 失效会直接中止编译。6.6 仍在上游保留: include/kernel-6.6 = 6.6.156,
-# target/linux/{generic,x86}/patches-6.6 齐全(含 i225 EEE 那条)。
+# ===== 内核锁定 6.18 LTS【测试分支 kernel-6.18-test】=====
+# 2026-10-13: 从 6.6 切到 6.18 做验证版。依据(逐条在 coolsnowwolf/lede 源码上核实, 非推测):
+#   - 上游 x86 默认 KERNEL_PATCHVER 已是 6.18; 6.12 只是 KERNEL_TESTING_PATCHVER(testing 线)
+#   - include/kernel-6.18 与 target/linux/{x86,generic} 的 config-6.18 / patches-6.18 /
+#     pending-6.18 齐全; patches-6.18 含 i225 EEE 补丁(996-intel-igc-i225-i226-disable-eee)
+#   - 6.18 是最新 LTS: 官方 EOL Dec 2028(6.6 为 Dec 2027)
+#   - 9/11 那次掉内核(6.18.49)的 CI 结论是 success → 本插件集在 6.18 下能编过
+# 保留原「匹配任意版本再钉回」+ 自检写法: 上游以后 bump(6.20/7.x) 也不会静默漂移。
+# ⚠️ 本分支是测试分支, 发布通道已改到 AutoUpdate-618-test, 不碰生产的 AutoUpdate。
 X86_MK=target/linux/x86/Makefile
-sed -i -E 's/^KERNEL_PATCHVER:=.*/KERNEL_PATCHVER:=6.6/' "$X86_MK"
-grep -qx 'KERNEL_PATCHVER:=6.6' "$X86_MK" || { echo "!! 内核 6.6 pin 未生效($X86_MK), 中止"; exit 1; }
+for p in include/kernel-6.18 target/linux/x86/config-6.18 target/linux/x86/patches-6.18 target/linux/generic/pending-6.18; do [ -e "$p" ] || { echo "!! 6.18 内核树缺失: $p, 中止"; exit 1; }; done
+ls target/linux/x86/patches-6.18/*i225*i226*eee* >/dev/null 2>&1 || { echo "!! patches-6.18 缺 i225/i226 EEE 补丁, 中止(网卡掉线风险)"; exit 1; }
+sed -i -E 's/^KERNEL_PATCHVER:=.*/KERNEL_PATCHVER:=6.18/' "$X86_MK"
+grep -qx 'KERNEL_PATCHVER:=6.18' "$X86_MK" || { echo "!! 内核 6.18 pin 未生效($X86_MK), 中止"; exit 1; }
 echo "== 内核 pin: $(grep -m1 '^KERNEL_PATCHVER' "$X86_MK") | 上游 testing 线: $(grep -m1 '^KERNEL_TESTING_PATCHVER' "$X86_MK") =="
 
 # ===== 控制台/ttyd 终端需密码登录 =====

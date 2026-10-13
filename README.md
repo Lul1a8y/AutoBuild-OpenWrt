@@ -45,7 +45,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 **固件特性**
 
 - 源码：coolsnowwolf/lede master 分支
-- 内核：6.6 LTS
+- 内核：6.18 LTS（测试分支 kernel-6.18-test 验证中；main 仍为 6.6 LTS）
 - LuCI：23.05
 - 插件源：kenzok8/openwrt-packages + kenzok8/small + vernesong/OpenClash + fw876/helloworld
 - GFW 菜单归类：OpenClash / PassWall / SSR-Plus / ZeroTier / IPSec
