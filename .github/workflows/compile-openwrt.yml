@@ -221,6 +221,9 @@ jobs:
           echo "Compile_Date: ${Compile_Date}   FIRMWARE_VER: ${FIRMWARE_VER}"
           echo "config sha256: $(sha256sum .config | awk '{print $1}')"
           echo "lede commit: $(git rev-parse HEAD) ($(git log -1 --format=%cI))"
+          # 2026-10-17: 补目标/架构/内核 pin —— 原先只记 commit, 事后分不清这版是 6.6 还是 6.18
+          echo "target: $(awk -F '[=\"]+' '/^CONFIG_TARGET_BOARD=/{print $2}' .config)/$(awk -F '[=\"]+' '/^CONFIG_TARGET_SUBTARGET=/{print $2}' .config)  profile: $(awk -F '[=\"]+' '/^CONFIG_TARGET_PROFILE=/{print $2}' .config)"
+          echo "kernel: $(grep -m1 '^KERNEL_PATCHVER' target/linux/x86/Makefile 2>/dev/null || echo '(未 pin)')  testing: $(grep -m1 '^KERNEL_TESTING_PATCHVER' target/linux/x86/Makefile 2>/dev/null)"
           echo "--- feeds / 第三方源 commit ---"
           for d in feeds/* package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-autoupdate; do
             [ -d "$d/.git" ] || continue
