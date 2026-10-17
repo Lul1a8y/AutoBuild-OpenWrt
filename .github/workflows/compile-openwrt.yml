@@ -95,7 +95,17 @@ jobs:
     - name: 释放空间
       run: |
         sudo rm -rf /etc/apt/sources.list.d
-        sudo bash -c "curl -s https://us.cooluc.com/ubuntu-apt/sources-22.04.list > /etc/apt/sources.list"
+        # 2026-10-17: 原写法 curl -s + 直接重定向 → 无 -f/-S/-L, 404 会把错误页、TLS 失败会把空文件
+        # 写进 sources.list, 之后 apt-get update 才炸(报错还指向 apt)。改为下到临时文件 + 内容校验,
+        # 校验不过就保留 runner 默认源(安全降级, 不阻断构建)。
+        SRC_URL="https://us.cooluc.com/ubuntu-apt/sources-22.04.list"
+        if sudo curl -fsSL --retry 3 --connect-timeout 10 "$SRC_URL" -o /tmp/sources.list \
+           && [ -s /tmp/sources.list ] && grep -qE '^deb[[:space:]]' /tmp/sources.list; then
+          sudo cp /tmp/sources.list /etc/apt/sources.list
+          echo "== apt 源: 已切换到镜像(内容校验通过) =="
+        else
+          echo "::warning::镜像源获取失败或内容异常 → 保留 runner 默认源"
+        fi
         sudo swapoff -a
         sudo rm -f /swapfile /mnt/swapfile
         sudo docker image prune -a -f
@@ -104,7 +114,9 @@ jobs:
         sudo apt-get -y purge firefox clang* ghc* google* llvm* mono* mongo* mysql* php*
         sudo apt-get -y autoremove --purge
         sudo apt-get clean
-        sudo rm -rf /etc/mysql /etc/php /usr/lib/jvm /usr/libexec/docker /usr/local /usr/src/* /var/lib/docker /var/lib/gems /var/lib/mysql /var/lib/snapd /etc/skel /opt/{microsoft,az,hostedtoolcache,cni,mssql-tools,pipx} /usr/share/{az*,dotnet,swift,miniconda,gradle*,java,kotlinc,ri,sbt} /root/{.sbt,.local,.npm}
+        # 2026-10-17: 从清理清单里去掉 /usr/local —— 它承载 runner 的 node/python 工具链符号链接,
+        # 删掉只换来一点空间, 却可能让后续 action/脚本找不到命令。其余项都是与构建无关的镜像预装件。
+        sudo rm -rf /etc/mysql /etc/php /usr/lib/jvm /usr/libexec/docker /usr/src/* /var/lib/docker /var/lib/gems /var/lib/mysql /var/lib/snapd /etc/skel /opt/{microsoft,az,hostedtoolcache,cni,mssql-tools,pipx} /usr/share/{az*,dotnet,swift,miniconda,gradle*,java,kotlinc,ri,sbt} /root/{.sbt,.local,.npm}
         sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
         rm -rf ~/{.cargo,.dotnet,.rustup}
         df -Th
@@ -131,7 +143,9 @@ jobs:
       run: |
         git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" openwrt
         cd openwrt
-        ./scripts/feeds update -a > /dev/null 2>&1
+        # 2026-10-17: 不再 > /dev/null 2>&1 吞掉输出 —— 原先网络/源失败在这里静默, 直到很久以后
+        # 才以别的形式炸出来。这一处 update 是必需的: 下面「加载设置」的 diy-part.sh 要对 feeds/luci 打补丁。
+        ./scripts/feeds update -a
         ln -sf /${{matrix.target}}/openwrt $GITHUB_WORKSPACE/openwrt
         echo "Home=${GITHUB_WORKSPACE}/openwrt" >> $GITHUB_ENV
         echo "PATH1=${GITHUB_WORKSPACE}/openwrt/build/${{matrix.target}}" >> $GITHUB_ENV
@@ -180,7 +194,9 @@ jobs:
         fi
         source "${PATH1}/common.sh" && Diy_all
         /bin/bash "${PATH1}/$DIY_PART_SH"
-        ./scripts/feeds update -a
+        # 2026-10-17: 删掉这里的重复 feeds update —— 全程没有任何地方改 feeds.conf(已核), 上一次
+        # update(下载源码步骤)已把 feed 拉到最新; 此处再 update 只会在 diy-part 打完补丁后再 git pull
+        # 一次, 既慢又可能还原删除类改动。feeds install 保留原位, 不需要再刷新 feed 内容。
         # 2026-10-09: 原先内联在这里的 argon/编译日期/版本钉死/AutoUpdate加固 已合并到 post-feeds.sh
         # (与「修复缓存覆盖」曾是两份重复文本; 该文件幂等, 两处调用同一份定义)
         bash "${PATH1}/post-feeds.sh"
@@ -217,7 +233,8 @@ jobs:
       run: |
         cd openwrt
         source "${PATH1}/common.sh" && Diy_chajian > /dev/null 2>&1
-        make defconfig > /dev/null 2>&1
+        # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
+        make defconfig || { echo "!! make defconfig 失败"; exit 1; }
         ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/config.txt
         echo "TARGET_BOARD=$(awk -F '[="]+' '/TARGET_BOARD/{print $2}' .config)" >> $GITHUB_ENV
         echo "TARGET_SUBTARGET=$(awk -F '[="]+' '/TARGET_SUBTARGET/{print $2}' .config)" >> $GITHUB_ENV
@@ -241,7 +258,8 @@ jobs:
         if [ "${BY_INFORMATION}" == "true" ]; then
           source "${PATH1}/upgrade.sh" && GET_TARGET_INFO
           source "${PATH1}/common.sh" && Diy_xinxi
-          chmod -R 755 .
+          # 2026-10-17: 删掉 chmod -R 755 .(整树递归改权限, 上万文件 + 抹掉可执行位差异);
+          # Diy_xinxi 只 echo 编译信息、不写任何文件(已核 common.sh 全文), 不需要兜权限。
         fi
     - name: 电报通知
       if: env.SERVERCHAN_SCKEY == 'true'
@@ -275,9 +293,29 @@ jobs:
       run: |
         # 2026-10-09: 用 staging_dir/toolchain 是否真实存在判断"可增量", 不再只认 cache-hit 输出
         # (指纹 key 变化时是 restore-keys 部分命中: cache-hit=false 但 toolchain 其实可用 → 不该走冷编保险路径)
-        if ls /${{ matrix.target }}/openwrt/staging_dir/toolchain-* >/dev/null 2>&1; then
-          echo "hit=true" >> $GITHUB_OUTPUT
-          echo "== staging_dir/toolchain 已恢复 → 增量编译 =="
+        # 2026-10-17: 但"目录存在"不等于"这份 toolchain 匹配本次配置" —— restore-keys 是前缀匹配,
+        # .config 一改仍会把旧 staging_dir 整树恢复回来。故加构建指纹(与缓存 key 同一输入):
+        #   staging_dir/.hermes-build-fingerprint 与本次指纹不一致 → 清 toolchain, 安全降级走冷编。
+        # 注意: 不把 lede commit 放进 key/指纹 —— 上游每次 bump 都全冷编(5h21m 已逼近 6h 上限)。
+        CACHE_FP="$(cat "build/${{ matrix.target }}/.config" "build/${{ matrix.target }}/settings.ini" | sha256sum | awk '{print $1}')"
+        echo "CACHE_FP=$CACHE_FP" >> $GITHUB_ENV
+        echo "== 本次构建指纹: ${CACHE_FP:0:16} =="
+        SD="/${{ matrix.target }}/openwrt/staging_dir"
+        if ls "$SD"/toolchain-* >/dev/null 2>&1; then
+          if [ -f "$SD/.hermes-build-fingerprint" ]; then
+            OLD_FP="$(cat "$SD/.hermes-build-fingerprint")"
+            if [ "$OLD_FP" = "$CACHE_FP" ]; then
+              echo "hit=true" >> $GITHUB_OUTPUT
+              echo "== 指纹一致 + toolchain 已恢复 → 增量编译 =="
+            else
+              echo "::warning::缓存指纹不一致(${OLD_FP:0:16} ≠ ${CACHE_FP:0:16}) → 清 toolchain 走冷编"
+              rm -rf "$SD"/toolchain-*
+              echo "hit=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "::warning::缓存里没有指纹文件(旧缓存) → 本次按增量处理, 成功后补写"
+            echo "hit=true" >> $GITHUB_OUTPUT
+          fi
         else
           echo "hit=false" >> $GITHUB_OUTPUT
           echo "== 未发现 toolchain → 冷编保险路径 =="
@@ -335,6 +373,8 @@ jobs:
           rm -rf dl/go-mod-cache
           make -j$(nproc) || make -j1 V=s
         fi
+        # 2026-10-17: 指纹写进 staging_dir(随缓存一起保存), 供下次 restore-keys 部分命中时比对
+        echo "${CACHE_FP}" > staging_dir/.hermes-build-fingerprint
         echo "status=success" >> $GITHUB_ENV
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
         echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
@@ -407,6 +447,21 @@ jobs:
         else
           echo "::warning::产物内未找到 10_system.js, 跳过概览页注入检查"
         fi
+        # ===== 2026-10-17: 关键产物硬断言 =====
+        # 原缺口: 全流程没有任何一处断言"镜像真的产出了", 而发布步骤用 artifacts: Firmware/* 通配,
+        # 于是目录空也能"发布成功"。这里在镜像还在 bin/targets 时就卡死。
+        IMGS="$(ls bin/targets/*/*/*combined*.img.gz 2>/dev/null || true)"
+        [ -n "$IMGS" ] || { echo "!! 未产出 *combined*.img.gz"; ls -l bin/targets/*/*/ 2>/dev/null | head -20; exit 1; }
+        for f in $IMGS; do
+          SZ="$(stat -c %s "$f")"
+          [ "$SZ" -ge 52428800 ] || { echo "!! $f 体积异常(${SZ}B < 50MB, 可能截断)"; exit 1; }
+          gzip -t "$f" || { echo "!! $f gzip 完整性校验失败"; exit 1; }
+          echo "== 镜像 OK: $f ($((SZ/1024/1024))MB, gzip 完整) =="
+        done
+        SUMS="$(ls bin/targets/*/*/sha256sums 2>/dev/null | head -1)"
+        [ -n "$SUMS" ] || { echo "!! 未产出 sha256sums"; exit 1; }
+        ( cd "$(dirname "$SUMS")" && sha256sum -c sha256sums --ignore-missing --quiet ) || { echo "!! sha256sums 校验失败"; exit 1; }
+        echo "== sha256sums 校验通过 =="
         echo "== 产物自检通过 =="
 
     - name: 上传配置
@@ -439,6 +494,9 @@ jobs:
         find . \( -name "*vmlinuz*" -o -name "*Image*" -o -name "*rootfs.img.gz*" -o -name "*kernel.bin*" \) -exec rm -rf {} +
         rm -rf packages
         rename -v "s/^openwrt/${{ env.date1 }}-${{ env.CODE }}/" *
+        # 2026-10-17: rename 之后再确认一次(发布/上传都用通配, 空目录也会"成功")
+        ls *combined*.img.gz >/dev/null 2>&1 || { echo "!! rename 后未找到 combined 镜像"; ls -l | head -20; exit 1; }
+        [ "$(ls -1 | wc -l)" -ge 2 ] || { echo "!! 发布目录资产少于 2 个"; exit 1; }
         [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "BOT=TRUE" >> $GITHUB_ENV
@@ -547,3 +605,37 @@ jobs:
       run: |
         curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件(${{env.CangKu}}仓库的#${{env.Run_number}}号)顺利编译完成了！💐" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
           || echo "::warning::电报通知发送失败(不影响固件与发布)"
+
+    - name: 失败取证(归档日志与配置)
+      if: failure()
+      run: |
+        # 2026-10-17: 失败时不再只能翻 20 万行 run 日志 —— 归档 openwrt/logs + 两份 .config +
+        # BUILD_SOURCE, 并把错误签名聚合到 step summary(GitHub 日志只留 90 天, 且没人会去 grep)。
+        OUT="$GITHUB_WORKSPACE/fail-diag"; mkdir -p "$OUT"
+        cp BUILD_SOURCE.txt "$OUT/" 2>/dev/null || true
+        cp "build/${{ matrix.target }}/.config" "$OUT/config.source" 2>/dev/null || true
+        [ -f openwrt/.config ] && cp openwrt/.config "$OUT/config.generated" || true
+        [ -d openwrt/logs ] && tar czf "$OUT/build-logs.tgz" openwrt/logs 2>/dev/null || true
+        {
+          echo "## 失败诊断 (run ${{ github.run_id }})"
+          echo ""
+          echo "- ref: ${{ github.ref_name }} / sha: ${{ github.sha }}"
+          echo "- 构建指纹: ${CACHE_FP:-unknown}"
+          echo "- 缓存命中: ${{ steps.cachecheck.outputs.hit }}"
+          echo ""
+          echo "### 错误签名 Top20"
+          echo '```'
+          grep -rhoE 'make(\[[0-9]+\])?: \*\*\* \[[^]]+\] Error [0-9]+' openwrt/logs 2>/dev/null | sed 's/.*\[//' | sort | uniq -c | sort -rn | head -20 || echo "(openwrt/logs 无匹配, 见 build-logs.tgz)"
+          echo '```'
+        } > "$OUT/summary.md"
+        cat "$OUT/summary.md" >> $GITHUB_STEP_SUMMARY
+        du -sh "$OUT" 2>/dev/null || true
+
+    - name: 上传失败日志
+      if: failure()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: fail-diag-${{ github.run_id }}
+        path: fail-diag
+        if-no-files-found: warn
+        retention-days: 14
