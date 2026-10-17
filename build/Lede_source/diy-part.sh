@@ -333,6 +333,22 @@ cat > target/linux/x86/base-files/etc/board.json << 'BJEOF'
 }
 BJEOF
 
+# ===== 2026-10-17: board.json 结构自检(JSON 合法 / 四口齐全 / 端口不重复 / WAN=eth1) =====
+# 映射写错或漏口的后果: WAN 口被并进 br-lan → 环路 / LAN 全断, 只能靠实机救。
+python3 - <<'PY' || { echo "!! board.json 自检失败"; exit 1; }
+import json
+p = "target/linux/x86/base-files/etc/board.json"
+d = json.load(open(p, encoding="utf-8"))
+net = d["network"]
+lan, wan = net["lan"]["ports"], net["wan"]["ports"]
+allp = lan + wan
+assert len(allp) == len(set(allp)), f"端口重复: {allp}"
+assert set(allp) == {"eth0", "eth1", "eth2", "eth3"}, f"端口集合不符: {allp}"
+assert wan == ["eth1"], f"WAN 必须是 eth1, 实际 {wan}"
+assert lan == ["eth0", "eth2", "eth3"], f"LAN 必须 eth0/eth2/eth3, 实际 {lan}"
+print(f"== board.json OK: LAN={lan} WAN={wan} ==")
+PY
+
 # ===== x86 generic 板型网口注册 =====
 # ⚠️ 已删除：02_network sed 注入和 network config sed
 # 根因：sed 的 \n 转义在 dash/sh 下不生效为换行，导致 02_network 脚本语法错误
