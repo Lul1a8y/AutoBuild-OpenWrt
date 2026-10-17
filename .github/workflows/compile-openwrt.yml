@@ -222,7 +222,7 @@ jobs:
           echo "config sha256: $(sha256sum .config | awk '{print $1}')"
           echo "lede commit: $(git rev-parse HEAD) ($(git log -1 --format=%cI))"
           # 2026-10-17: 补目标/架构/内核 pin —— 原先只记 commit, 事后分不清这版是 6.6 还是 6.18
-          echo "target: $(awk -F '[=\"]+' '/^CONFIG_TARGET_BOARD=/{print $2}' .config)/$(awk -F '[=\"]+' '/^CONFIG_TARGET_SUBTARGET=/{print $2}' .config)  profile: $(awk -F '[=\"]+' '/^CONFIG_TARGET_PROFILE=/{print $2}' .config)"
+          echo "target/profile: (见下方 make defconfig 之后补记)"
           echo "kernel: $(grep -m1 '^KERNEL_PATCHVER' target/linux/x86/Makefile 2>/dev/null || echo '(未 pin)')  testing: $(grep -m1 '^KERNEL_TESTING_PATCHVER' target/linux/x86/Makefile 2>/dev/null)"
           echo "--- feeds / 第三方源 commit ---"
           for d in feeds/* package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-autoupdate; do
@@ -239,6 +239,11 @@ jobs:
         # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
         make defconfig || { echo "!! make defconfig 失败"; exit 1; }
         ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/config.txt
+        # 2026-10-18: 此处的 .config 才是 defconfig 之后的完整配置; 记录来源那一步的 .config 只是片段
+        {
+          echo "target: $(awk -F '[=\"]+' '/^CONFIG_TARGET_BOARD=/{print $2}' .config)/$(awk -F '[=\"]+' '/^CONFIG_TARGET_SUBTARGET=/{print $2}' .config)  profile: $(awk -F '[=\"]+' '/^CONFIG_TARGET_PROFILE=/{print $2}' .config)"
+          echo "config sha256(final): $(sha256sum .config | awk '{print $1}')"
+        } >> ${GITHUB_WORKSPACE}/BUILD_SOURCE.txt
         echo "TARGET_BOARD=$(awk -F '[="]+' '/TARGET_BOARD/{print $2}' .config)" >> $GITHUB_ENV
         echo "TARGET_SUBTARGET=$(awk -F '[="]+' '/TARGET_SUBTARGET/{print $2}' .config)" >> $GITHUB_ENV
         if [ `grep -c "CONFIG_TARGET_x86_64=y" .config` -eq '1' ]; then
@@ -300,7 +305,14 @@ jobs:
         # .config 一改仍会把旧 staging_dir 整树恢复回来。故加构建指纹(与缓存 key 同一输入):
         #   staging_dir/.hermes-build-fingerprint 与本次指纹不一致 → 清 toolchain, 安全降级走冷编。
         # 注意: 不把 lede commit 放进 key/指纹 —— 上游每次 bump 都全冷编(5h21m 已逼近 6h 上限)。
-        CACHE_FP="$(cat "build/${{ matrix.target }}/.config" "build/${{ matrix.target }}/settings.ini" | sha256sum | awk '{print $1}')"
+        # 2026-10-18 修: 原写法读 build/<target>/.config, 在 runner 上不存在 → cat 输出为空,
+        # sha256sum 恒等于空输入的 e3b0c442..., 指纹等于没有。改用 PATH1(加载设置里已导出, 一定存在)。
+        if [ -f "${PATH1}/.config" ] && [ -f "${PATH1}/settings.ini" ]; then
+          CACHE_FP="$( { cat "${PATH1}/.config"; cat "${PATH1}/settings.ini"; } | sha256sum | awk '{print $1}')"
+        else
+          CACHE_FP="unknown"
+          echo "::warning::指纹输入缺失(config=$([ -f "${PATH1}/.config" ] && echo 有 || echo 无) settings=$([ -f "${PATH1}/settings.ini" ] && echo 有 || echo 无)) → 记 unknown"
+        fi
         echo "CACHE_FP=$CACHE_FP" >> $GITHUB_ENV
         echo "== 本次构建指纹: ${CACHE_FP:0:16} =="
         SD="/${{ matrix.target }}/openwrt/staging_dir"
@@ -311,9 +323,11 @@ jobs:
               echo "hit=true" >> $GITHUB_OUTPUT
               echo "== 指纹一致 + toolchain 已恢复 → 增量编译 =="
             else
-              echo "::warning::缓存指纹不一致(${OLD_FP:0:16} ≠ ${CACHE_FP:0:16}) → 清 toolchain 走冷编"
-              rm -rf "$SD"/toolchain-*
-              echo "hit=false" >> $GITHUB_OUTPUT
+              # 2026-10-18: 不再在这里 rm toolchain。只清 staging_dir/toolchain-* 而不清
+              # build_dir/toolchain-* 会留下 .built 戳记, 下次 make 认为已编好 → binutils 链接期失败
+              # (正是 9/5 的老坑)。失配只告警, 实际清理交给编译步骤里已有的降级路径。
+              echo "::warning::缓存指纹不一致(${OLD_FP:0:16} ≠ ${CACHE_FP:0:16}) → 告警, 交编译步骤自行降级"
+              echo "hit=true" >> $GITHUB_OUTPUT
             fi
           else
             echo "::warning::缓存里没有指纹文件(旧缓存) → 本次按增量处理, 成功后补写"
@@ -626,9 +640,22 @@ jobs:
           echo "- 构建指纹: ${CACHE_FP:-unknown}"
           echo "- 缓存命中: ${{ steps.cachecheck.outputs.hit }}"
           echo ""
+          echo "### 环境与资源"
+          echo '```'
+          echo "[disk]"; df -h / /home/runner 2>/dev/null | tail -4
+          echo "[mem]";  free -m | head -3
+          echo "[dmesg]"; dmesg 2>/dev/null | grep -iE "oom|killed process|no space|error" | tail -10 || echo "(需 root, 跳过)"
+          echo "[sizes]"; du -sh openwrt/staging_dir openwrt/build_dir openwrt/bin 2>/dev/null
+          echo '```'
+          echo ""
           echo "### 错误签名 Top20"
           echo '```'
           grep -rhoE 'make(\[[0-9]+\])?: \*\*\* \[[^]]+\] Error [0-9]+' openwrt/logs 2>/dev/null | sed 's/.*\[//' | sort | uniq -c | sort -rn | head -20 || echo "(openwrt/logs 无匹配, 见 build-logs.tgz)"
+          echo '```'
+          echo ""
+          echo "### 最后一次 make 失败点"
+          echo '```'
+          ls -t openwrt/logs 2>/dev/null | head -5 || echo "(no logs dir)"
           echo '```'
         } > "$OUT/summary.md"
         cat "$OUT/summary.md" >> $GITHUB_STEP_SUMMARY
