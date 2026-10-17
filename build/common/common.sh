@@ -176,16 +176,49 @@ fi
 ################################################################################################################
 Diy_chuli() {
 
-sed -i '$ s/exit 0$//' ${Home}/package/base-files/files/etc/rc.local
-echo '
-# 关闭 Intel i225-V EEE，防止 LAN 口链路抖动和 TX 队列超时 (2026-08-06)
-for iface in eth0 eth1 eth2 eth3; do
-	[ -x /usr/sbin/ethtool ] && ethtool --set-eee $iface eee off 2>/dev/null
-done
-/etc/init.d/network restart
-/etc/init.d/uhttpd restart
-exit 0
-' >> ${Home}/package/base-files/files/etc/rc.local
+# ===== 2026-10-17: rc.local 注入改为「标记块 + 幂等」=====
+# 旧实现: sed -i '$ s/exit 0$//' 后无条件 echo >> —— 没有标记, 重复执行就重复注入;
+# 注入块里还带 /etc/init.d/network restart + uhttpd restart(每次开机重启网络, 会让 eth0
+# 在 100M→2.5G 重协商期间再抖一次; 网络本身由 procd 正常拉起, 不需要这两行)。
+RC="${Home}/package/base-files/files/etc/rc.local"
+[ -f "$RC" ] || { echo "!! rc.local 不存在: $RC"; exit 1; }
+RC_BEGIN='# >>> hermes-managed (i225 EEE) >>>'
+RC_END='# <<< hermes-managed (i225 EEE) <<<'
+# 1) 删旧标记块(若有) 2) 删 2026-08 无标记旧版块(头行到其后的 exit 0) 3) 去尾部空行与结尾 exit 0
+awk -v b="$RC_BEGIN" -v e="$RC_END" -v legacy='# 关闭 Intel i225-V EEE' '
+  $0==b {inblk=1; next}
+  $0==e {inblk=0; next}
+  inblk {next}
+  index($0, legacy) > 0 {inleg=1; next}
+  inleg { if ($0 ~ /^[[:space:]]*exit 0[[:space:]]*$/) inleg=0; next }
+  {buf[++n]=$0}
+  END {
+    # 顺序要紧: 先摘掉结尾 exit 0, 再清尾部空行 —— 反过来的话, exit 0 被摘掉后
+    # 它前面那行空行会留下来, 每次重复执行都 +1 行(首版就这么踩的, 本地用例抓到)。
+    if (n>0 && buf[n] ~ /^[[:space:]]*exit 0[[:space:]]*$/) n--
+    while (n>0 && buf[n] ~ /^[[:space:]]*$/) n--
+    for (i=1;i<=n;i++) print buf[i]
+  }' "$RC" > "$RC.new" && mv "$RC.new" "$RC"
+# 4) 只追加一次
+{
+  echo ""
+  echo "$RC_BEGIN"
+  echo "# 关闭 Intel i225-V EEE，防止 LAN 口链路抖动和 TX 队列超时 (2026-08-06)"
+  echo "# 2026-10-17: 不在此处 restart network/uhttpd —— 网络由 procd 负责, 开机重启会让网口再抖一次"
+  echo "for iface in eth0 eth1 eth2 eth3; do"
+  echo "	[ -x /usr/sbin/ethtool ] && ethtool --set-eee \$iface eee off 2>/dev/null"
+  echo "done"
+  echo "$RC_END"
+  echo "exit 0"
+} >> "$RC"
+# 5) 自检: 恰好一段标记 / 恰好一个 exit 0 / 不得残留 restart
+[ "$(grep -cF "$RC_BEGIN" "$RC")" = "1" ] || { echo "!! rc.local: 起始标记数量异常"; exit 1; }
+[ "$(grep -cF "$RC_END" "$RC")" = "1" ] || { echo "!! rc.local: 结束标记数量异常"; exit 1; }
+[ "$(grep -cE '^[[:space:]]*exit 0[[:space:]]*$' "$RC")" = "1" ] || { echo "!! rc.local: exit 0 不是恰好 1 个"; exit 1; }
+if grep -qE '/etc/init\.d/(network|uhttpd)[[:space:]]+restart' "$RC"; then
+  echo "!! rc.local 仍含 network/uhttpd restart"; exit 1
+fi
+echo "== rc.local 注入完成(单块, 无网络重启) =="
 
 if [[ "${REPO_BRANCH}" == "19.07" ]]; then
 	sed -i 's/PATCHVER:=4.9/PATCHVER:=4.14/g' target/linux/*/Makefile
