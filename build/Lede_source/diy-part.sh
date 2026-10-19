@@ -274,7 +274,7 @@ sed -i 's|admin/services/mosdns|admin/vpn/mosdns|g' package/kenzok8-small/luci-a
 # ===== AdGuard Home 只留 LuCI 壳子，核心已删除 =====
 
 # ===== 权限修复 =====
-chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
+chmod -R 755 package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-filetransfer
 
 # ===== MosDNS 版本修复 + 启动优化 =====
 # ⚠️ 真实版本格局(2026-09-05 run 日志 + GitHub 实测):
@@ -378,6 +378,25 @@ git clone --depth 1 --single-branch -b master \
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci
+
+# ⚠️ feeds 索引在 diy-part 之前就已生成(见日志 "Create index file './feeds/luci.index'"),
+#    新拷进来的 luci-lib-fs 不在索引里 → filetransfer 依赖解析不到 →
+#    编译期只告警、打包期 opkg 硬失败 (run 39067947542: package/install Error 255)。
+#    修法: 只重建索引(不拉代码) + 显式安装 + 断言, 缺了当场失败而不是等 5 小时。
+if [ -d feeds/luci/libs/luci-lib-fs ]; then
+	./scripts/feeds update -i luci >/dev/null 2>&1 || {
+		echo "!! 重建 luci feed 索引失败" >&2
+		exit 1
+	}
+	./scripts/feeds install luci-lib-fs >/dev/null 2>&1 || true
+	if [ ! -e package/feeds/luci/luci-lib-fs ]; then
+		echo "!! luci-lib-fs 未安装到 package/feeds/luci, luci-app-filetransfer 依赖会缺失, 中止构建" >&2
+		exit 1
+	fi
+else
+	echo "!! feeds/luci/libs/luci-lib-fs 不存在(上游目录结构可能已变), 中止构建" >&2
+	exit 1
+fi
 
 # 删除旧版 po/zh-cn（LuCI 23.05+ 用 po/zh_Hans，避免冲突）
 rm -rf feeds/luci/applications/luci-app-filetransfer/po/zh-cn
