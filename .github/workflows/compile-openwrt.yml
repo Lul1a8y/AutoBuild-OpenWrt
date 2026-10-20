@@ -76,6 +76,8 @@ jobs:
         echo "UPLOAD_RELEASE=${UPLOAD_RELEASE}" >> $GITHUB_ENV
         echo "SERVERCHAN_SCKEY=${SERVERCHAN_SCKEY}" >> $GITHUB_ENV
         echo "REGULAR_UPDATE=${REGULAR_UPDATE}" >> $GITHUB_ENV
+        # 2026-10-20: USE_CACHEWRTBUILD 已标注为「当前不生效」—— 缓存由下面的 actions/cache 步骤无条件启用,
+        # 全流程没有一处读这个开关。保留导出是为了不破坏既有 settings.ini(若接上使用则行为会变)。
         echo "USE_CACHEWRTBUILD=${USE_CACHEWRTBUILD}" >> $GITHUB_ENV
         echo "BY_INFORMATION=${BY_INFORMATION}" >> $GITHUB_ENV
         echo "AUTOMATIC_AMLOGIC=${AUTOMATIC_AMLOGIC}" >> $GITHUB_ENV
@@ -101,7 +103,7 @@ jobs:
         fi
         # 2026-10-09: 固件版本号唯一来源(上游 lede bump 只改这一处; post-feeds.sh / 发布信息 / 产物自检共用)
         echo "FIRMWARE_VER=R26.05.20" >> $GITHUB_ENV
-        echo "NETIP=package/base-files/files/etc/networkip" >> $GITHUB_ENV
+        # 2026-10-20: 删除 NETIP —— 全仓库无任何地方读取它(连未启用的 Lienol/Mortal 分支都不读)
         echo "DELETE=package/base-files/files/etc/deletefile" >> $GITHUB_ENV
 
     - name: 释放空间
