@@ -20,7 +20,14 @@ TIME() {
 }
 source /bin/openwrt_info
 [ ! -d ${Download_Path} ] && mkdir -p ${Download_Path}
-wget -q --no-cookie --no-check-certificate -T 15 -t 4 ${Github_Tags} -O ${Download_Tags}
+# 2026-10-20: 原为无条件 --no-check-certificate(跳过 TLS 校验) —— 本脚本拿到的版本索引随后用来
+# 决定"换成哪个固件", 明文降级等于把换机决策交给中间人。改为: 先严格 TLS, 失败再回退并显式告警
+# (与 CI 里 云端更新3 的同款处理)。网络环境允许时行为完全不变, 只有原先依赖跳过校验才能成功的
+# 场景才走回退分支。
+if ! wget -q --no-cookie -T 15 -t 4 "${Github_Tags}" -O "${Download_Tags}"; then
+	TIME y "严格 TLS 获取版本信息失败, 回退 --no-check-certificate 重试(证书校验已被跳过, 结果可信度下降)"
+	wget -q --no-cookie --no-check-certificate -T 15 -t 4 "${Github_Tags}" -O "${Download_Tags}"
+fi
 [[ ! $? == 0 ]] && {
 	TIME r "获取固件版本信息失败,请检测网络或您的网络需要翻墙,或者您更改的Github地址为无效地址!"
 	exit 1

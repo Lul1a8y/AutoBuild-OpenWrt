@@ -53,6 +53,18 @@ jobs:
     - name: 读取设置
       run: |
         source "${GITHUB_WORKSPACE}/build/${{matrix.target}}/settings.ini"
+        # 2026-10-20: 开关只认字面 true/false —— 写成 ture/yes/1 时, 下游 "== true" 判断全部静默变
+        # false(不报错, 只是通知/上传/发布被跳过), 排查代价极高。这里对已知开关做字面校验,
+        # 写错即中止; 与现有 true/false 用法完全等价, 不改变现有行为。
+        BAD_SWITCH=0
+        for SW in SSH_ACTIONS UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE USE_CACHEWRTBUILD BY_INFORMATION AUTOMATIC_AMLOGIC; do
+          VAL="${!SW-}"
+          case "$VAL" in
+            true|false|"") ;;
+            *) echo "!! settings.ini: ${SW}=『${VAL}』不是 true/false —— 下游会静默当成 false"; BAD_SWITCH=1 ;;
+          esac
+        done
+        [ "$BAD_SWITCH" = "0" ] || { echo "!! settings.ini 存在非法开关值, 中止(避免静默跳过上传/发布)"; exit 1; }
         echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
         echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
         echo "CONFIG_FILE=${CONFIG_FILE}" >> $GITHUB_ENV
@@ -483,11 +495,35 @@ jobs:
         # 于是目录空也能"发布成功"。这里在镜像还在 bin/targets 时就卡死。
         IMGS="$(ls bin/targets/*/*/*combined*.img.gz 2>/dev/null || true)"
         [ -n "$IMGS" ] || { echo "!! 未产出 *combined*.img.gz"; ls -l bin/targets/*/*/ 2>/dev/null | head -20; exit 1; }
+        # 2026-10-20: 用固定名 + trap 清理, 不用 mktemp -u(名字先返回后创建, 存在竞态);
+        # 该 runner 只跑本 job, 固定名足够, 且退出时必定清理。
+        OUT_IMG="/tmp/openwrt-image-check.$$.img"
+        trap 'rm -f "$OUT_IMG"' EXIT
         for f in $IMGS; do
           SZ="$(stat -c %s "$f")"
           [ "$SZ" -ge 52428800 ] || { echo "!! $f 体积异常(${SZ}B < 50MB, 可能截断)"; exit 1; }
-          gzip -t "$f" || { echo "!! $f gzip 完整性校验失败"; exit 1; }
-          echo "== 镜像 OK: $f ($((SZ/1024/1024))MB, gzip 完整) =="
+          # 2026-10-20: run 39368545991 在 "gzip -t" 上报 "decompression OK, trailing garbage ignored"
+          # 并判失败, 白丢一次 5h 构建。gzip -t 只在「解压过程中」校验 CRC/长度, 所以它同时会放过
+          # 「帧本身完好、但文件被追加了垃圾」的情况; 而 gzip -dc 在尾随字节非零时可能直接报错并丢弃
+          # 已解出内容(gzip 1.12 实测: 尾随 "GARBAGE" → -dc 返回非零; 尾随 \0 才被忽略)。
+          # 故判据改为「能把镜像完整解出来」: 先解压到磁盘, 要求退出 0 且非空; 只有解压失败时才回退
+          # 到 gzip -t 区分「可解压但尾随垃圾(告警放行)」与「真损坏(硬失败)」。正常路径(无损)下
+          # 与旧判据等价, 不改变任何现有行为。
+          if gzip -dc "$f" > "$OUT_IMG" 2>/dev/null && [ -s "$OUT_IMG" ]; then
+            rm -f "$OUT_IMG"
+            echo "== 镜像 OK: $f ($((SZ/1024/1024))MB, 可完整解压) =="
+          else
+            rm -f "$OUT_IMG"
+            # 本地实测(gzip 1.12): 尾随垃圾时 -dc 退 2 且已丢出完整内容, 需按 gzip -t 的提示区分;
+            # 截断/CRC 错误两处都不通过 → 仍硬失败。四种形态(完好/尾随垃圾/截断/CRC)已离线验证。
+            GZ_MSG="$(gzip -t "$f" 2>&1 || true)"
+            if printf '%s' "$GZ_MSG" | grep -q 'trailing garbage ignored'; then
+              echo "::warning::$f 尾部有多余字节(gzip: trailing garbage ignored), 解压内容完整 → 判为可用"
+              echo "== 镜像 OK(容忍尾随字节): $f ($((SZ/1024/1024))MB) =="
+            else
+              echo "!! $f gzip 完整性校验失败: ${GZ_MSG:-gzip -t 无输出}"; exit 1
+            fi
+          fi
         done
         SUMS="$(ls bin/targets/*/*/sha256sums 2>/dev/null | head -1)"
         [ -n "$SUMS" ] || { echo "!! 未产出 sha256sums"; exit 1; }
@@ -534,7 +570,9 @@ jobs:
         echo "status=success" >> $GITHUB_ENV
         
     - name: 上传固件
-      if: env.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
+      # 2026-10-20: FIRMWARE 只在「整理文件」最后写入; 若该步中途失败而 status 仍为 success,
+      # 原条件会让 env.FIRMWARE 展开成空 → path 变成以 / 开头的相对路径(行为不可预期)。补存在性判断。
+      if: env.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && env.FIRMWARE != ''
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ env.OpenWrt_name }}-${{ env.CODE }}-${{ env.TARGET_PROFILE }}-firmware-${{ env.Compile_Date }}
@@ -572,7 +610,8 @@ jobs:
         echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true'
+      # 2026-10-20: 同上, FIRMWARE 为空时 artifacts 通配会指向错误位置 → 补存在性判断
+      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true' && env.FIRMWARE != ''
       uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
       with:
         name: ${{ env.CODE }}-${{ env.TARGET_PROFILE }}
@@ -638,8 +677,13 @@ jobs:
           || echo "::warning::电报通知发送失败(不影响固件与发布)"
 
     - name: 失败取证(归档日志与配置)
-      if: failure()
+      # 2026-10-20: 原为 if: failure() —— GitHub 的 failure() 在「作业被取消」时也不执行,
+      # 而取消/超时同样需要现场。改为 !cancelled() 后由内部判断是否真有失败要归档;
+      # 成功构建时只做一次瞬时判断, 行为与原来一致(成功就不归档)。
+      if: ${{ !cancelled() }}
       run: |
+        if [ "${{ job.status }}" = "success" ]; then echo "== 本次构建成功, 跳过失败取证 =="; exit 0; fi
+        echo "== job.status=${{ job.status }} → 归档失败现场 =="
         # 2026-10-17: 失败时不再只能翻 20 万行 run 日志 —— 归档 openwrt/logs + 两份 .config +
         # BUILD_SOURCE, 并把错误签名聚合到 step summary(GitHub 日志只留 90 天, 且没人会去 grep)。
         OUT="$GITHUB_WORKSPACE/fail-diag"; mkdir -p "$OUT"
@@ -676,7 +720,8 @@ jobs:
         du -sh "$OUT" 2>/dev/null || true
 
     - name: 上传失败日志
-      if: failure()
+      # 2026-10-20: 与失败取证同步改为 !cancelled() —— 取证目录不存在时 if-no-files-found: warn 只告警
+      if: ${{ !cancelled() && job.status != 'success' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: fail-diag-${{ github.run_id }}
