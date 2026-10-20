@@ -155,7 +155,14 @@ if [ -n "$(ls -A "${Home}/build/QUEWENJIANerros" 2>/dev/null)" ]; then
 rm -rf ${Home}/build/QUEWENJIANerros
 exit 1
 fi
-rm -rf {build,README.md}
+# 2026-10-20: 这里是 `rm -rf {build,README.md}`(相对当前目录)。Diy_settings 是在「加载设置」
+# 步骤开头、`cd openwrt` 之前调用的, 当时 cwd 还是 $GITHUB_WORKSPACE —— 所以被删掉的是
+# 仓库里那份**原始** build/, 不是拷进 openwrt 的那份。而原始 build/<target>/.config 和
+# settings.ini 正是工作流缓存 key 的 hashFiles 输入: 删掉之后 hashFiles 恒为空,
+# 缓存 key 永远是 "Linux-Lede_source-openwrt-"(结尾空哈希), 配置文件怎么改都不会失效,
+# 于是 10-09 那份旧 staging_dir 被无限复用 —— 这是 geoview 编译失败与构建缓慢的总根源。
+# 原始 build/ 后续没有任何步骤依赖"它不存在", 保留它反而让 key/指纹恢复有效, 故不再删除。
+# (原来顺手删的根目录 README.md 同样没有下游依赖, 一并保留。)
 }
 
 
