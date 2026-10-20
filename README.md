@@ -42,6 +42,18 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 构建通知 | 否 |
 | `OPENCLASH_DASH_PASS` | OpenClash 面板密码（不配置则随机生成） | 否 |
 
+**刷机后验收自检**
+
+`scripts/router-acceptance.sh` 是只读的实机验收脚本：检查四口映射 / EEE 与 igc 健康 / PPPoE 与 MTU-MSS / IPv6 / DNS 链 / 代理分流 / offload / 存储，输出 `PASS` / `WARN` / `FAIL` 三态，退出码等于 FAIL 数量（0 = 全通过）。
+
+```sh
+# 在路由器上执行（需要 SSH 可达，默认 192.168.50.2:12306）
+scp scripts/router-acceptance.sh root@192.168.50.2:/tmp/
+ssh -p 12306 root@192.168.50.2 sh /tmp/router-acceptance.sh
+```
+
+脚本全程只读：不改 uci、不重启服务、不打印任何密码字段。建议每次刷完固件跑一遍再开始配置。
+
 **固件特性**
 
 - 源码：coolsnowwolf/lede master 分支
