@@ -72,7 +72,11 @@ find . -name 'luci-app-wrtbwmon' -o -name 'wrtbwmon' | xargs -i rm -rf {}
 Diy_all() {
 
 if [[ ${REGULAR_UPDATE} == "true" ]]; then
-	git clone https://github.com/281677160/luci-app-autoupdate feeds/luci/applications/luci-app-autoupdate
+	# 2026-10-21: 固定 commit, 不再跟随上游 master(上游改主分支/删库/推坏提交都会直接炸构建)
+	# 升级时改下面 checkout 的 SHA 即可: git ls-remote https://github.com/281677160/luci-app-autoupdate HEAD
+	APP_DIR="feeds/luci/applications/luci-app-autoupdate"
+	git clone https://github.com/281677160/luci-app-autoupdate "${APP_DIR}" || { echo "!! luci-app-autoupdate 拉取失败, 构建中止"; exit 1; }
+	git -C "${APP_DIR}" checkout -q 04f2a3708ec0bb216c6dec2e51695f6a7e906a56 || { echo "!! luci-app-autoupdate 固定 commit 校验失败, 构建中止"; exit 1; }
 	cp -Rf "${PATH1}"/{AutoUpdate.sh,replace.sh} package/base-files/files/bin
 	sed -i 's/"定时更新"/"更新固件"/g' feeds/luci/applications/luci-app-autoupdate/po/zh-cn/autoupdate.po
 	sed -i 's/定时更新 LUCI/固件更新 LUCI/g' feeds/luci/applications/luci-app-autoupdate/po/zh-cn/autoupdate.po
