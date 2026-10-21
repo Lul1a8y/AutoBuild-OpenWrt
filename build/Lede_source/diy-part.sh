@@ -105,6 +105,23 @@ for dir in package/kenzok8/*/; do
     fi
 done
 
+# ===== 补回 buildroot 扫描签名（2026-10-21）=====
+# buildroot 收录一个包只认一句话（include/scan.mk）:
+#   find -L package -name Makefile | xargs grep -aHE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)'
+# Makefile 里没有 "call BuildPackage" 字样的包根本不会进 tmp/.packageinfo,
+# 于是 Kconfig 里没有它的符号, .config 里写了 =y 也会被静默丢弃 —— 不报错, 固件里就是没有。
+# 2026-10-19 kenzok8 把 luci-app-adguardhome 末尾的签名注释和 $(eval ...) 一起删了,
+# 结果 10-20 那版固件 ADH 连 LuCI 壳子都不见了(核心本来就不编)。
+# 这里对 kenzok8 源整体兜底: 缺签名的补一行注释 + 一行 eval(重复 BuildPackage 无副作用)。
+for mk in package/kenzok8/*/Makefile; do
+	[ -f "$mk" ] || continue
+	grep -qE 'call (BuildPackage|KernelPackage|Build/DefaultTargets)' "$mk" && continue
+	pkg="$(sed -n 's/^PKG_NAME:=//p' "$mk" | head -1)"
+	[ -n "$pkg" ] || pkg="$(basename "$(dirname "$mk")")"
+	printf '\n# call BuildPackage - OpenWrt buildroot signature\n$(eval $(call BuildPackage,%s))\n' "$pkg" >> "$mk"
+	echo "== 补回扫描签名: $pkg (上游 Makefile 缺 call BuildPackage) =="
+done
+
 # ===== AdGuard Home：删核心只留 LuCI 壳子 =====
 # Lullaby 决定不预装 AGH 核心，只保留 luci-app 前端，之后自己下载配置
 # 原因：AGH 核心随开机自启动（postinst enable + S95AdGuardHome），

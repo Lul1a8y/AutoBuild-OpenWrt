@@ -53,6 +53,18 @@ jobs:
     - name: 读取设置
       run: |
         source "${GITHUB_WORKSPACE}/build/${{matrix.target}}/settings.ini"
+        # 2026-10-20: 开关只认字面 true/false —— 写成 ture/yes/1 时, 下游 "== true" 判断全部静默变
+        # false(不报错, 只是通知/上传/发布被跳过), 排查代价极高。这里对已知开关做字面校验,
+        # 写错即中止; 与现有 true/false 用法完全等价, 不改变现有行为。
+        BAD_SWITCH=0
+        for SW in SSH_ACTIONS UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE USE_CACHEWRTBUILD BY_INFORMATION AUTOMATIC_AMLOGIC; do
+          VAL="${!SW-}"
+          case "$VAL" in
+            true|false|"") ;;
+            *) echo "!! settings.ini: ${SW}=『${VAL}』不是 true/false —— 下游会静默当成 false"; BAD_SWITCH=1 ;;
+          esac
+        done
+        [ "$BAD_SWITCH" = "0" ] || { echo "!! settings.ini 存在非法开关值, 中止(避免静默跳过上传/发布)"; exit 1; }
         echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
         echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
         echo "CONFIG_FILE=${CONFIG_FILE}" >> $GITHUB_ENV
@@ -64,6 +76,8 @@ jobs:
         echo "UPLOAD_RELEASE=${UPLOAD_RELEASE}" >> $GITHUB_ENV
         echo "SERVERCHAN_SCKEY=${SERVERCHAN_SCKEY}" >> $GITHUB_ENV
         echo "REGULAR_UPDATE=${REGULAR_UPDATE}" >> $GITHUB_ENV
+        # 2026-10-20: USE_CACHEWRTBUILD 已标注为「当前不生效」—— 缓存由下面的 actions/cache 步骤无条件启用,
+        # 全流程没有一处读这个开关。保留导出是为了不破坏既有 settings.ini(若接上使用则行为会变)。
         echo "USE_CACHEWRTBUILD=${USE_CACHEWRTBUILD}" >> $GITHUB_ENV
         echo "BY_INFORMATION=${BY_INFORMATION}" >> $GITHUB_ENV
         echo "AUTOMATIC_AMLOGIC=${AUTOMATIC_AMLOGIC}" >> $GITHUB_ENV
@@ -89,7 +103,7 @@ jobs:
         fi
         # 2026-10-09: 固件版本号唯一来源(上游 lede bump 只改这一处; post-feeds.sh / 发布信息 / 产物自检共用)
         echo "FIRMWARE_VER=R26.05.20" >> $GITHUB_ENV
-        echo "NETIP=package/base-files/files/etc/networkip" >> $GITHUB_ENV
+        # 2026-10-20: 删除 NETIP —— 全仓库无任何地方读取它(连未启用的 Lienol/Mortal 分支都不读)
         echo "DELETE=package/base-files/files/etc/deletefile" >> $GITHUB_ENV
 
     - name: 释放空间
@@ -238,6 +252,18 @@ jobs:
         source "${PATH1}/common.sh" && Diy_chajian > /dev/null 2>&1
         # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
         make defconfig || { echo "!! make defconfig 失败"; exit 1; }
+        # 2026-10-21: 防"包被静默跳过"。buildroot 只收录 Makefile 里含 "call BuildPackage"
+        # 字样的包(include/scan.mk), 缺了就不进 tmp/.packageinfo, .config 写 =y 也没用、
+        # 不报错、固件里就是没有 —— 10-20 那版 ADH 就是这么消失的。
+        # 这里对关键包做收录断言, 失败即中止(发生在编译前, 代价几分钟)。
+        for p in luci-app-adguardhome luci-app-openclash luci-app-mosdns luci-app-passwall; do
+          grep -q "$p" tmp/.packageinfo || {
+            echo "!! $p 未被 buildroot 收录(scan.mk 跳过), 检查其 Makefile 是否含 'call BuildPackage'"
+            grep -rn "PKG_NAME" package/kenzok8/$p/Makefile 2>/dev/null | head -3
+            exit 1
+          }
+        done
+        echo "== 关键包收录断言通过 =="
         ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/config.txt
         # 2026-10-18: 此处的 .config 才是 defconfig 之后的完整配置; 记录来源那一步的 .config 只是片段
         {
@@ -289,8 +315,15 @@ jobs:
         # 2026-10-09: key 增加 .config/settings.ini 指纹(固定 key 会让旧缓存永不失效; hashFiles 必须写显式路径,
         # 点开头的 .config 不会被 ** 通配到); 另加 restore-keys 前缀 → 指纹变化时仍能部分命中, 不必从零下 dl。
         # 刻意不把源码 commit 放进 key: 上游每次 bump 都会全冷编(冷编 5h21m 已逼近 6h 上限)。
+        # 2026-10-20: 刻意不缓存 dl/go-mod-cache(Go 模组下载缓存)。
+        # run 39409842961 的 geoview 失败就是这个目录: 它是 10-09 保存时下载到一半的残缺缓存,
+        # 里面 sagernet/sing@v0.8.9 缺 common/debug、common/x/collections 等子包,
+        # protobuf@v1.36.11 缺 internal/editiondefaults → "no required module provides package"。
+        # 这类缓存无法在 restore 时校验完整性, 一旦坏掉会以"某个 go 包编译失败"的形式反复出现,
+        # 且每次都白白烧掉 2-3 小时。模组重新下载只需几分钟, 用确定性换这点时间划算。
         path: |
           /${{ matrix.target }}/openwrt/dl
+          !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
         key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target)) }}
         restore-keys: |
@@ -305,13 +338,21 @@ jobs:
         # .config 一改仍会把旧 staging_dir 整树恢复回来。故加构建指纹(与缓存 key 同一输入):
         #   staging_dir/.hermes-build-fingerprint 与本次指纹不一致 → 清 toolchain, 安全降级走冷编。
         # 注意: 不把 lede commit 放进 key/指纹 —— 上游每次 bump 都全冷编(5h21m 已逼近 6h 上限)。
-        # 2026-10-18 修: 原写法读 build/<target>/.config, 在 runner 上不存在 → cat 输出为空,
-        # sha256sum 恒等于空输入的 e3b0c442..., 指纹等于没有。改用 PATH1(加载设置里已导出, 一定存在)。
-        if [ -f "${PATH1}/.config" ] && [ -f "${PATH1}/settings.ini" ]; then
-          CACHE_FP="$( { cat "${PATH1}/.config"; cat "${PATH1}/settings.ini"; } | sha256sum | awk '{print $1}')"
+        # 2026-10-20 修(第二轮): 指纹之前一直读 "${PATH1}/.config", 但「加载设置」里已执行
+        #   mv "$PATH1/$CONFIG_FILE" .config
+        # 该文件被搬进 openwrt/ 了, 所以这里永远"缺失" → 指纹恒为 unknown → 每次都走
+        # 「旧缓存 → 按增量处理」分支 → 10-09 那份旧 staging_dir + dl/go-mod-cache 被永远复用。
+        # 这就是 run 39409842961 里 geoview 报
+        #   "no required module provides package github.com/sagernet/sing/common/debug"
+        # 的直接原因: go-mod-cache 是 10-09 保存的、下载到一半的残缺模组缓存。
+        # 现改为与缓存 key 完全相同的输入(仓库内的原始 build/<target>/ 副本, 未被 mv 动过),
+        # 保证「key 变 ⇔ 指纹变」两者不会脱节。
+        SRC_DIR="${GITHUB_WORKSPACE}/build/${{ matrix.target }}"
+        if [ -f "${SRC_DIR}/.config" ] && [ -f "${SRC_DIR}/settings.ini" ]; then
+          CACHE_FP="$( { cat "${SRC_DIR}/.config"; cat "${SRC_DIR}/settings.ini"; } | sha256sum | awk '{print $1}')"
         else
           CACHE_FP="unknown"
-          echo "::warning::指纹输入缺失(config=$([ -f "${PATH1}/.config" ] && echo 有 || echo 无) settings=$([ -f "${PATH1}/settings.ini" ] && echo 有 || echo 无)) → 记 unknown"
+          echo "::warning::指纹输入缺失(config=$([ -f "${SRC_DIR}/.config" ] && echo 有 || echo 无) settings=$([ -f "${SRC_DIR}/settings.ini" ] && echo 有 || echo 无)) → 记 unknown"
         fi
         echo "CACHE_FP=$CACHE_FP" >> $GITHUB_ENV
         echo "== 本次构建指纹: ${CACHE_FP:0:16} =="
@@ -330,6 +371,9 @@ jobs:
               echo "hit=true" >> $GITHUB_OUTPUT
             fi
           else
+            # 2026-10-20: 旧缓存(10-09 那份)没写指纹文件, 无法校验, 仍按增量走 —— 冷编 5h21m
+            # 贴着 355min 上限, 不能为了"可能的不一致"就放弃缓存。一致性由「编译固件」里
+            # 强制丢弃 dl/go-mod-cache 来兜底(见该步骤注释)。
             echo "::warning::缓存里没有指纹文件(旧缓存) → 本次按增量处理, 成功后补写"
             echo "hit=true" >> $GITHUB_OUTPUT
           fi
@@ -378,6 +422,14 @@ jobs:
         # 1 核, 就是 10/19 那次 5h41 的来源). 现改为: 先把 binutils 单独串行编好并落
         # .built 戳记, 再开并行 —— 竞态不成立, 且不用牺牲全局并行度.
         rm -f build.log
+        # ===== 2026-10-20: 丢弃 Go 模组缓存 =====
+        # run 39409842961: geoview 两次都死在
+        #   dl/go-mod-cache/github.com/sagernet/sing@v0.8.9/common/buf/buffer.go:10:2:
+        #   no required module provides package github.com/sagernet/sing/common/debug
+        # 即缓存里那份 sing@v0.8.9 是残缺的(子包目录没解出来)。这个目录是纯派生物,
+        # 每次构建都重新下载, 几行日志的代价, 换掉整个"go 包莫名编译失败"故障类。
+        # 注意必须放在 binutils 预编译之前, 且 dl/go-mod-cache 已从缓存路径里排除。
+        rm -rf dl/go-mod-cache
         if ls build_dir/toolchain-*/binutils-*/.built >/dev/null 2>&1; then
           echo '== binutils .built 已存在, 跳过预编译 =='
         else
@@ -483,11 +535,35 @@ jobs:
         # 于是目录空也能"发布成功"。这里在镜像还在 bin/targets 时就卡死。
         IMGS="$(ls bin/targets/*/*/*combined*.img.gz 2>/dev/null || true)"
         [ -n "$IMGS" ] || { echo "!! 未产出 *combined*.img.gz"; ls -l bin/targets/*/*/ 2>/dev/null | head -20; exit 1; }
+        # 2026-10-20: 用固定名 + trap 清理, 不用 mktemp -u(名字先返回后创建, 存在竞态);
+        # 该 runner 只跑本 job, 固定名足够, 且退出时必定清理。
+        OUT_IMG="/tmp/openwrt-image-check.$$.img"
+        trap 'rm -f "$OUT_IMG"' EXIT
         for f in $IMGS; do
           SZ="$(stat -c %s "$f")"
           [ "$SZ" -ge 52428800 ] || { echo "!! $f 体积异常(${SZ}B < 50MB, 可能截断)"; exit 1; }
-          gzip -t "$f" || { echo "!! $f gzip 完整性校验失败"; exit 1; }
-          echo "== 镜像 OK: $f ($((SZ/1024/1024))MB, gzip 完整) =="
+          # 2026-10-20: run 39368545991 在 "gzip -t" 上报 "decompression OK, trailing garbage ignored"
+          # 并判失败, 白丢一次 5h 构建。gzip -t 只在「解压过程中」校验 CRC/长度, 所以它同时会放过
+          # 「帧本身完好、但文件被追加了垃圾」的情况; 而 gzip -dc 在尾随字节非零时可能直接报错并丢弃
+          # 已解出内容(gzip 1.12 实测: 尾随 "GARBAGE" → -dc 返回非零; 尾随 \0 才被忽略)。
+          # 故判据改为「能把镜像完整解出来」: 先解压到磁盘, 要求退出 0 且非空; 只有解压失败时才回退
+          # 到 gzip -t 区分「可解压但尾随垃圾(告警放行)」与「真损坏(硬失败)」。正常路径(无损)下
+          # 与旧判据等价, 不改变任何现有行为。
+          if gzip -dc "$f" > "$OUT_IMG" 2>/dev/null && [ -s "$OUT_IMG" ]; then
+            rm -f "$OUT_IMG"
+            echo "== 镜像 OK: $f ($((SZ/1024/1024))MB, 可完整解压) =="
+          else
+            rm -f "$OUT_IMG"
+            # 本地实测(gzip 1.12): 尾随垃圾时 -dc 退 2 且已丢出完整内容, 需按 gzip -t 的提示区分;
+            # 截断/CRC 错误两处都不通过 → 仍硬失败。四种形态(完好/尾随垃圾/截断/CRC)已离线验证。
+            GZ_MSG="$(gzip -t "$f" 2>&1 || true)"
+            if printf '%s' "$GZ_MSG" | grep -q 'trailing garbage ignored'; then
+              echo "::warning::$f 尾部有多余字节(gzip: trailing garbage ignored), 解压内容完整 → 判为可用"
+              echo "== 镜像 OK(容忍尾随字节): $f ($((SZ/1024/1024))MB) =="
+            else
+              echo "!! $f gzip 完整性校验失败: ${GZ_MSG:-gzip -t 无输出}"; exit 1
+            fi
+          fi
         done
         SUMS="$(ls bin/targets/*/*/sha256sums 2>/dev/null | head -1)"
         [ -n "$SUMS" ] || { echo "!! 未产出 sha256sums"; exit 1; }
@@ -534,7 +610,9 @@ jobs:
         echo "status=success" >> $GITHUB_ENV
         
     - name: 上传固件
-      if: env.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
+      # 2026-10-20: FIRMWARE 只在「整理文件」最后写入; 若该步中途失败而 status 仍为 success,
+      # 原条件会让 env.FIRMWARE 展开成空 → path 变成以 / 开头的相对路径(行为不可预期)。补存在性判断。
+      if: env.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && env.FIRMWARE != ''
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ env.OpenWrt_name }}-${{ env.CODE }}-${{ env.TARGET_PROFILE }}-firmware-${{ env.Compile_Date }}
@@ -572,7 +650,8 @@ jobs:
         echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true'
+      # 2026-10-20: 同上, FIRMWARE 为空时 artifacts 通配会指向错误位置 → 补存在性判断
+      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true' && env.FIRMWARE != ''
       uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
       with:
         name: ${{ env.CODE }}-${{ env.TARGET_PROFILE }}
@@ -638,8 +717,13 @@ jobs:
           || echo "::warning::电报通知发送失败(不影响固件与发布)"
 
     - name: 失败取证(归档日志与配置)
-      if: failure()
+      # 2026-10-20: 原为 if: failure() —— GitHub 的 failure() 在「作业被取消」时也不执行,
+      # 而取消/超时同样需要现场。改为 !cancelled() 后由内部判断是否真有失败要归档;
+      # 成功构建时只做一次瞬时判断, 行为与原来一致(成功就不归档)。
+      if: ${{ !cancelled() }}
       run: |
+        if [ "${{ job.status }}" = "success" ]; then echo "== 本次构建成功, 跳过失败取证 =="; exit 0; fi
+        echo "== job.status=${{ job.status }} → 归档失败现场 =="
         # 2026-10-17: 失败时不再只能翻 20 万行 run 日志 —— 归档 openwrt/logs + 两份 .config +
         # BUILD_SOURCE, 并把错误签名聚合到 step summary(GitHub 日志只留 90 天, 且没人会去 grep)。
         OUT="$GITHUB_WORKSPACE/fail-diag"; mkdir -p "$OUT"
@@ -676,7 +760,8 @@ jobs:
         du -sh "$OUT" 2>/dev/null || true
 
     - name: 上传失败日志
-      if: failure()
+      # 2026-10-20: 与失败取证同步改为 !cancelled() —— 取证目录不存在时 if-no-files-found: warn 只告警
+      if: ${{ !cancelled() && job.status != 'success' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: fail-diag-${{ github.run_id }}
