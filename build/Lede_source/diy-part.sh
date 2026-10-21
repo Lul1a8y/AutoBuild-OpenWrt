@@ -1,12 +1,12 @@
 #!/bin/bash
 # https://github.com/Lul1a8y/AutoBuild-OpenWrt
-# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.18(测试分支 kernel-6.18-test) + 编译时间 + 网口修复
+# diy-part.sh — 权威插件源 + AdGuard Home + MosDNS + 内核6.18 + 编译时间 + 网口修复
 # 更新日期: 2026-09-03
 # 修复: mosdns feeds冲突(删旧版5.3.4-1→剩5.3.4-5) + AGH禁用自启动 + 编译时间精确到时分
 # 2026-09-03: 补拉 geo2txt — luci-app-mosdns v1.7.12 新依赖，kenzok8/small 漏同步，9/2 编译在此失败
 # 2026-09-03: 克隆全部 depth 1 + 末尾源码完整性检查（9/2 OpenClash 克隆超时被静默丢弃的教训）
 
-# ===== 内核锁定 6.18 LTS【测试分支 kernel-6.18-test】=====
+# ===== 内核锁定 6.18 LTS =====
 # 2026-10-13: 从 6.6 切到 6.18 做验证版。依据(逐条在 coolsnowwolf/lede 源码上核实, 非推测):
 #   - 上游 x86 默认 KERNEL_PATCHVER 已是 6.18; 6.12 只是 KERNEL_TESTING_PATCHVER(testing 线)
 #   - include/kernel-6.18 与 target/linux/{x86,generic} 的 config-6.18 / patches-6.18 /
@@ -14,7 +14,8 @@
 #   - 6.18 是最新 LTS: 官方 EOL Dec 2028(6.6 为 Dec 2027)
 #   - 9/11 那次掉内核(6.18.49)的 CI 结论是 success → 本插件集在 6.18 下能编过
 # 保留原「匹配任意版本再钉回」+ 自检写法: 上游以后 bump(6.20/7.x) 也不会静默漂移。
-# ⚠️ 本分支是测试分支, 发布通道已改到 AutoUpdate-618-test, 不碰生产的 AutoUpdate。
+# ⚠️ 本分支已并入 main, 发布通道为生产 AutoUpdate; 若从 main 拉测试分支验证,
+#    记得把 workflow 里两处 tag 改回 AutoUpdate-618-test, 别误推生产。
 X86_MK=target/linux/x86/Makefile
 for p in include/kernel-6.18 target/linux/x86/config-6.18 target/linux/x86/patches-6.18 target/linux/generic/pending-6.18; do [ -e "$p" ] || { echo "!! 6.18 内核树缺失: $p, 中止"; exit 1; }; done
 ls target/linux/x86/patches-6.18/*i225*i226*eee* >/dev/null 2>&1 || { echo "!! patches-6.18 缺 i225/i226 EEE 补丁, 中止(网卡掉线风险)"; exit 1; }

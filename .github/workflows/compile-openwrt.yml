@@ -681,9 +681,8 @@ jobs:
       with:
         repo_token: ${{ secrets.REPO_TOKEN }}
         file: openwrt/bin/Firmware/*
-        # 2026-10-13 测试分支: 发布通道改到 AutoUpdate-618-test, 生产 AutoUpdate 通道不受影响
-        # (合并回 main 时把这一行与下面 云端更新4/3 的 tag 一起改回 AutoUpdate)
-        tag: AutoUpdate-618-test
+        # 2026-10-21 已合并回 main: 发布通道恢复生产 AutoUpdate(测试分支要改回 AutoUpdate-618-test)
+        tag: AutoUpdate
         overwrite: true
         file_glob: true
         
@@ -693,9 +692,9 @@ jobs:
         mkdir -p Github_Tags
         cd Github_Tags
         # 2026-10-09: 先按严格 TLS 取, 失败才回退 --no-check-certificate 并显式告警(不再默认跳过证书校验)
-        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate-618-test -O Github_Tags; then
+        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags; then
           echo "::warning::GitHub API 严格 TLS 拉取失败, 回退 --no-check-certificate 重试"
-          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate-618-test -O Github_Tags
+          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
         fi
         [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
         
@@ -705,8 +704,8 @@ jobs:
       with:
         repo_token: ${{ secrets.REPO_TOKEN }}
         file: Github_Tags/*
-        # 2026-10-13 测试分支: 同上, 写测试通道
-        tag: AutoUpdate-618-test
+        # 2026-10-21 已合并回 main: 同上, 写生产通道
+        tag: AutoUpdate
         overwrite: true
         file_glob: true
 
