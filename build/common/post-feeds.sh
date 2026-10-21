@@ -98,4 +98,27 @@ if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
   printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR/root/etc/openwrt_update"
 fi
 
+# 2026-10-21: 修 dnsmasq 在 ujail 里看不到 passwall 的 ACL conf-dir
+# 症状: passwall 用 dns_shunt=dnsmasq 时 dnsmasq crash loop, 日志
+#   cannot access directory /tmp/etc/passwall/acl/default/dnsmasq.d: No such file or directory
+#   FAILED to start up        (procd 每 5s 重启, 连崩 6 次放弃 → 全屋 DNS 挂)
+# 根因: passwall 用 uci add_list dhcp.@dnsmasq[0].addnmount=... 把 ACL 目录交给 dnsmasq,
+#   但这份 dnsmasq.init 没有 addnmount 钩子(上游 openwrt master 有:
+#   config_list_foreach "$cfg" addnmount append_extramount)。于是 ujail 从不挂载该目录,
+#   dnsmasq 在 jail 里读到 conf-dir 指向不存在的路径 → 拒绝启动。
+#   实测: 同一份 conf 在宿主 root 下 dnsmasq --test 通过, 只有 jail 里失败。
+# 修: 补回上游钩子; 额外加 [ -e ] 守卫 —— 开机时 passwall 还没建目录、或 stop 后已 rm -rf 时,
+#   不让"挂载源不存在"把 jail 建失败(那会让 dnsmasq 彻底起不来)。
+DNSMASQ_INIT="package/network/services/dnsmasq/files/dnsmasq.init"
+if [ -f "$DNSMASQ_INIT" ]; then
+  if ! grep -q 'config_list_foreach "$cfg" addnmount' "$DNSMASQ_INIT"; then
+    grep -q '^append_extramount()' "$DNSMASQ_INIT" || \
+      perl -0pi -e 's/^append_addnhosts\(\) \{/append_extramount() {\n\t[ -e "\$1" ] || return 0\n\tismounted "\$1" || append EXTRA_MOUNT "\$1"\n}\n\nappend_addnhosts() {/m' "$DNSMASQ_INIT"
+    perl -0pi -e 's/^\tprocd_open_instance \$cfg$/\tconfig_list_foreach "\$cfg" addnmount append_extramount\n\n\tprocd_open_instance \$cfg/m' "$DNSMASQ_INIT"
+  fi
+  # 自检(负向): 钩子必须在位
+  grep -q 'config_list_foreach "$cfg" addnmount' "$DNSMASQ_INIT" || { echo "!! dnsmasq addnmount 钩子补丁未生效"; exit 1; }
+  echo "== dnsmasq init 已补 addnmount 钩子(ujail 可见 passwall ACL 目录) =="
+fi
+
 echo "== post-feeds 修补完成 =="
