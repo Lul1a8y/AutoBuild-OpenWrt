@@ -1,0 +1,70 @@
+#!/bin/sh
+# /etc/uci-defaults/zzz-passwall-dnsmasq-guard
+#
+# 2026-10-21: 修 passwall 切换 DNS 分流模式把 dnsmasq 打死的问题
+#   - dnsmasq 分流模式下, passwall 把 /tmp/etc/passwall/acl/<acl>/dnsmasq.d 写进
+#     dhcp.@dnsmasq[0].addnmount; ujail 里的 dnsmasq 要求该路径存在
+#   - 但 stop() 先 `rm -rf $GLOBAL_DNSMASQ_CONF_PATH` 再重启 dnsmasq, 于是:
+#       cannot access directory /tmp/etc/passwall/acl/default/dnsmasq.d: No such file or directory
+#       FAILED to start up  ->  procd: Instance dnsmasq::cfg01411c s in a crash loop 6 crashes
+#     实测 2026-10-21 17:02:28~17:02:53 连续 6 次, 期间全网 DNS 中断
+#   - 更麻烦的是 stop() 里清 addnmount 有条件 (app.sh:1810
+#     `[ -z "$ACL_default_dns_port" ] || [ -n "$bak_dnsmasq_dns_redirect" ]`), 多数情况不成立,
+#     悬空条目留在 /etc/config/dhcp, 之后每次 dnsmasq 重启都会再挂
+#
+# 这里在首启时给 /usr/share/passwall/app.sh 打两处幂等补丁:
+#   1) stop() 里 `rm -rf $GLOBAL_DNSMASQ_CONF_PATH` 之后无条件清掉 addnmount
+#   2) 写 addnmount 之前先 mkdir -p 该目录 (变量为空时不建)
+# 并把已存在的悬空条目清掉。所有异常只告警, 不阻塞启动(必须 exit 0)。
+
+MARK='passwall-dnsmasq-guard'
+APP="${PASSWALL_APP:-/usr/share/passwall/app.sh}"
+
+[ -f "$APP" ] || exit 0
+
+patch_app() {
+	[ -f "$APP" ] || return 0
+	grep -q "$MARK" "$APP" && return 0
+	cp -f "$APP" "${APP}.bak" 2>/dev/null || true
+	awk -v mark="$MARK" '
+		/rm -rf \$GLOBAL_DNSMASQ_CONF_PATH/ && !stop_done {
+			print
+			print "[ -n \"${GLOBAL_DNSMASQ_CONF_PATH}\" ] && uci -q del_list dhcp.@dnsmasq[0].addnmount=\"${GLOBAL_DNSMASQ_CONF_PATH}\"  # " mark
+			print "[ -n \"${GLOBAL_DNSMASQ_CONF_PATH}\" ] && uci -q commit dhcp"
+			stop_done = 1
+			next
+		}
+		/uci -q add_list dhcp\.@dnsmasq\[0\]\.addnmount=\$\{GLOBAL_DNSMASQ_CONF_PATH\}/ && !start_done {
+			print "[ -n \"${GLOBAL_DNSMASQ_CONF_PATH}\" ] && mkdir -p \"${GLOBAL_DNSMASQ_CONF_PATH}\"  # " mark
+			print
+			start_done = 1
+			next
+		}
+		{ print }
+	' "$APP" > "${APP}.new" || { rm -f "${APP}.new"; echo "passwall-dnsmasq-guard: 生成补丁失败, 跳过"; return 0; }
+	if grep -q "$MARK" "${APP}.new"; then
+		mv -f "${APP}.new" "$APP"
+		echo "passwall-dnsmasq-guard: 已给 $APP 打补丁"
+	else
+		rm -f "${APP}.new"
+		echo "passwall-dnsmasq-guard: 未匹配到锚点, 跳过(passwall 版本可能已变)"
+	fi
+	return 0
+}
+
+clean_stale() {
+	changed=0
+	for p in $(uci -q get dhcp.@dnsmasq[0].addnmount 2>/dev/null); do
+		case "$p" in
+			*passwall*)
+				[ -d "$p" ] || { uci -q del_list dhcp.@dnsmasq[0].addnmount="$p"; changed=1; }
+				;;
+		esac
+	done
+	[ "$changed" = 1 ] && uci -q commit dhcp
+	return 0
+}
+
+patch_app
+clean_stale
+exit 0
