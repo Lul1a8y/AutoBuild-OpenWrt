@@ -57,7 +57,7 @@ jobs:
         # false(不报错, 只是通知/上传/发布被跳过), 排查代价极高。这里对已知开关做字面校验,
         # 写错即中止; 与现有 true/false 用法完全等价, 不改变现有行为。
         BAD_SWITCH=0
-        for SW in SSH_ACTIONS UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE USE_CACHEWRTBUILD BY_INFORMATION AUTOMATIC_AMLOGIC; do
+        for SW in SSH_ACTIONS UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE BY_INFORMATION AUTOMATIC_AMLOGIC; do
           VAL="${!SW-}"
           case "$VAL" in
             true|false|"") ;;
@@ -65,6 +65,33 @@ jobs:
           esac
         done
         [ "$BAD_SWITCH" = "0" ] || { echo "!! settings.ini 存在非法开关值, 中止(避免静默跳过上传/发布)"; exit 1; }
+        # 2026-10-21: settings.ini 是用 source 解析的, 格式一走样就静默变味 ——
+        #   REPO_URL="https://x  # 注释"  注释在引号内, 会跟着值一起进下游(URL 直接失效)
+        #   REPO_URL=https://x  # 注释   未加引号, 值在空格处被截断
+        # 这里直接检查原始文件: 只允许 KEY="VALUE", 行尾注释必须写在引号外面。
+        BAD_INI=0
+        LN=0
+        INI="${GITHUB_WORKSPACE}/build/${{matrix.target}}/settings.ini"
+        while IFS= read -r line || [ -n "$line" ]; do
+          LN=$((LN+1))
+          case "$line" in ''|'#'*) continue ;; [[:space:]]*'#'*) continue ;; esac
+          if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=\"[^\"]*\"[[:space:]]*(#.*)?$ ]]; then
+            echo "!! settings.ini 第 ${LN} 行格式不对: 『${line}』"
+            echo "!! 要求 KEY=\"VALUE\", 注释只能写在引号外面; 否则 source 会把注释吃进值里"
+            BAD_INI=1
+          fi
+        done < "$INI"
+        [ "$BAD_INI" = "0" ] || { echo "!! settings.ini 格式非法, 中止(避免把带注释的值传给下游)"; exit 1; }
+        # 上面的格式检查看不出「注释写进引号里」这种: REPO_URL="https://x  # 注释" 的引号是配平的。
+        # 所以再对 source 之后的值做一次检查: 这几个键只可能是 URL/分支名/文件名, 不该出现 # 或空白。
+        for KEY in REPO_URL REPO_BRANCH CONFIG_FILE DIY_PART_SH; do
+          VAL="${!KEY-}"
+          if [ -z "$VAL" ] || [[ "$VAL" == *'#'* || "$VAL" == *'"'* || "$VAL" == *"'"* || "$VAL" == *[[:space:]]* ]]; then
+            echo "!! settings.ini: ${KEY}=『${VAL}』为空或含 # / 引号 / 空白 —— source 解析后注释或空格进了值"
+            BAD_INI=1
+          fi
+        done
+        [ "$BAD_INI" = "0" ] || { echo "!! settings.ini 值格式非法, 中止"; exit 1; }
         echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
         echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
         echo "CONFIG_FILE=${CONFIG_FILE}" >> $GITHUB_ENV
@@ -76,9 +103,6 @@ jobs:
         echo "UPLOAD_RELEASE=${UPLOAD_RELEASE}" >> $GITHUB_ENV
         echo "SERVERCHAN_SCKEY=${SERVERCHAN_SCKEY}" >> $GITHUB_ENV
         echo "REGULAR_UPDATE=${REGULAR_UPDATE}" >> $GITHUB_ENV
-        # 2026-10-20: USE_CACHEWRTBUILD 已标注为「当前不生效」—— 缓存由下面的 actions/cache 步骤无条件启用,
-        # 全流程没有一处读这个开关。保留导出是为了不破坏既有 settings.ini(若接上使用则行为会变)。
-        echo "USE_CACHEWRTBUILD=${USE_CACHEWRTBUILD}" >> $GITHUB_ENV
         echo "BY_INFORMATION=${BY_INFORMATION}" >> $GITHUB_ENV
         echo "AUTOMATIC_AMLOGIC=${AUTOMATIC_AMLOGIC}" >> $GITHUB_ENV
         echo "CangKu=${Apidz##*/}" >> $GITHUB_ENV
