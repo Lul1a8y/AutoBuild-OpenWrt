@@ -179,11 +179,16 @@ else
 			source /bin/openwrt_info
 			TIME h "执行：更换[Github地址]操作"
 			TIME y "地址格式：https://github.com/帐号/仓库"
-			TIME z  "正确地址示例：https://github.com/281677160/AutoBuild-OpenWrt"
+			TIME z  "正确地址示例：https://github.com/Lul1a8y/AutoBuild-OpenWrt"
 			TIME h  "现在所用地址为：${Github}"
 			echo
 			read -p "请输入新的Github地址：" Input_Other
 			Input_Other="${Input_Other:-"$Github"}"
+			[[ "${Input_Other}" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+				TIME r "地址格式不合法,只接受 https://github.com/<帐号>/<仓库>"
+				echo
+				exit 1
+			}
 			Github_uci=$(uci get autoupdate.@login[0].github 2>/dev/null)
 			[[ -n "${Github_uci}" ]] && [[ "${Github_uci}" != "${Input_Other}" ]] && {
 				uci set autoupdate.@login[0].github=${Input_Other}
@@ -335,17 +340,25 @@ cd ${Download_Path}
 # 2026-10-09: 若发布里附带 <固件>.sha256 清单, 先用完整 SHA256 校验固件
 # (下面基于"文件名 12 位片段"的校验只能防传输损坏: 文件与文件名一起被换就失效)
 SideCar="${Firmware}.sha256"
-if wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null && [ -s "${Download_Path}/${SideCar}" ]; then
-	EXPECT_SHA="$(awk '{print $1}' "${Download_Path}/${SideCar}")"
-	ACTUAL_SHA="$(sha256sum "${Download_Path}/${Firmware}" | awk '{print $1}')"
-	if [ -n "${EXPECT_SHA}" ] && [ "${EXPECT_SHA}" != "${ACTUAL_SHA}" ]; then
-		TIME r "完整SHA256校验失败,固件可能被替换或损坏,已中止!"
-		echo
-		exit 1
-	else
-		TIME g "完整SHA256校验通过"
-	fi
+if ! wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null || [ ! -s "${Download_Path}/${SideCar}" ]; then
+	TIME r "未取得 ${SideCar},无法校验固件完整性,已中止!"
+	TIME z "请确认该发布已附带 ${SideCar} 校验清单,不要跳过校验刷机"
+	echo
+	exit 1
 fi
+EXPECT_SHA="$(awk '{print $1}' "${Download_Path}/${SideCar}")"
+ACTUAL_SHA="$(sha256sum "${Download_Path}/${Firmware}" | awk '{print $1}')"
+if ! echo "${EXPECT_SHA}" | grep -qE '^[0-9a-fA-F]{64}$'; then
+	TIME r "校验清单格式异常,已中止!"
+	echo
+	exit 1
+fi
+if [ "${EXPECT_SHA}" != "${ACTUAL_SHA}" ]; then
+	TIME r "完整SHA256校验失败,固件可能被替换或损坏,已中止!"
+	echo
+	exit 1
+fi
+TIME g "完整SHA256校验通过"
 export CLOUD_MD5=$(md5sum ${Firmware} | cut -c1-4)
 export CLOUD_256=$(sha256sum ${Firmware} | cut -c4-11)
 export MD5_256=$(echo ${Firmware} | egrep -o "[a-zA-Z0-9]+${Firmware_SFX}" | sed -r "s/(.*)${Firmware_SFX}/\1/")
