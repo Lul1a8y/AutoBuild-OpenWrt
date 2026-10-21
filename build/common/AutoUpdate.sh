@@ -264,11 +264,24 @@ echo "云端版本：${CLOUD_Version}"
 	echo
 	exit 1
 }
+# 2026-10-21: 版本比较改成只比末尾的时间戳数字。
+# 复核结论: 原写法 [[ "${CURRENT_Version}" -gt "${CLOUD_Version}" ]] 在 bash 下方向其实是对的 ——
+# 两边都被算术展开成 "-(64+时间戳)", 负数把大小关系又翻了回来, 所以 "gt 成立" 恰好等于
+# "云端更新", 文案也对得上, 不存在"静默降级"(审计第 5 条是误报)。
+# 真正的隐患: 换成 sh/ash 跑会报 out of range, 三个分支全不进, 直接落到下载+sysupgrade;
+# 版本串前缀一改(lede→immortalwrt)负数大小也会乱。故只取末尾数字, 显式三分支, 解析失败即中止。
+Cur_Num="$(echo "${CURRENT_Version}" | egrep -o "[0-9]+$")"
+Cloud_Num="$(echo "${CLOUD_Version}" | egrep -o "[0-9]+$")"
+if [[ -z "${Cur_Num}" || -z "${Cloud_Num}" ]]; then
+	TIME r "版本号解析失败(本地: ${CURRENT_Version} / 云端: ${CLOUD_Version}),已中止,请手动确认!"
+	echo
+	exit 1
+fi
 if [[ ! "${Force_Update}" == 1 ]];then
-  	if [[ "${CURRENT_Version}" -gt "${CLOUD_Version}" ]];then
+  	if [[ "${Cur_Num}" -lt "${Cloud_Num}" ]];then
 		TIME r "检测到有可更新的固件版本,立即更新固件!"
 	fi
-  	if [[ "${CURRENT_Version}" -eq "${CLOUD_Version}" ]];then
+  	if [[ "${Cur_Num}" -eq "${Cloud_Num}" ]];then
 		[[ "${AutoUpdate_Mode}" == 1 ]] && exit 0
 		TIME && read -p "当前版本和云端最新版本一致，是否还要重新安装固件?[Y/n]:" Choose
 		[[ "${Choose}" == Y ]] || [[ "${Choose}" == y ]] && {
@@ -279,7 +292,7 @@ if [[ ! "${Force_Update}" == 1 ]];then
 			exit 0
 		}
 	fi
-  	if [[ "${CURRENT_Version}" -lt "${CLOUD_Version}" ]];then
+  	if [[ "${Cur_Num}" -gt "${Cloud_Num}" ]];then
 		[[ "${AutoUpdate_Mode}" == 1 ]] && exit 0
 		TIME && read -p "云端最高版本,低于您现在的版本,是否强制覆盖现有固件?[Y/n]:" Choose
 		[[ "${Choose}" == Y ]] || [[ "${Choose}" == y ]] && {
