@@ -44,6 +44,8 @@ patch_app() {
 	' "$APP" > "${APP}.new" || { rm -f "${APP}.new"; echo "passwall-dnsmasq-guard: 生成补丁失败, 跳过"; return 0; }
 	if grep -q "$MARK" "${APP}.new"; then
 		mv -f "${APP}.new" "$APP"
+		# mv 带过来的是新文件的 0644, 会把 app.sh 的可执行位弄丢 -> 必须显式恢复
+		chmod 755 "$APP"
 		echo "passwall-dnsmasq-guard: 已给 $APP 打补丁"
 	else
 		rm -f "${APP}.new"
