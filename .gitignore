@@ -1,16 +1,21 @@
 upstream-audit/
 
-# ---- 构建产物（工作流/本地都会在这些路径生成）----
-/openwrt/
+# ---- 工作流直接在仓库根生成的东西 ----
+# openwrt 在 CI 里是 `ln -sf /target/openwrt $GITHUB_WORKSPACE/openwrt` 的符号链接，
+# 本地构建时则是真目录，所以这里不能带结尾斜杠。
+/openwrt
 /openwrt-armvirt/
 /Github_Tags/
 /fail-diag/
+/BUILD_SOURCE.txt
+/config.txt
+/update_log.txt
 
 # ---- 构建中途产生的临时文件 ----
+*.log
 .config.old
 *.orig
 *.rej
-*.log
 
 # ---- 编辑器 / 系统垃圾 ----
 .DS_Store
