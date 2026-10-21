@@ -1,0 +1,20 @@
+# This file is interpreted as a shell script.
+# Custom commands run after the default rules on every firewall restart.
+# The inet fw4 table is recreated on reload, this one is not.
+
+# 2026-10-21: 把 LAN 的 53 统一劫持到 AdGuardHome(127.0.0.1:5553)。
+# 目的: 在 ADH 的查询日志里看到真实客户端 IP —— 若客户端经 dnsmasq 转发,
+# ADH 只会看到源地址 127.0.0.1, 无法区分是哪台设备在查什么。
+# 代价: 客户端绕过 dnsmasq, passwall 写在 dnsmasq 里的按域名分流/ipset 注入
+# 对这一路径不生效; 域名分流仍由 xray 的 sniffing + mosdns 的 geo 分流兜底。
+#
+# 写法说明: 本文件在每次 fw4 reload 都会被执行一遍。裸 `iptables -A` 会让规则
+# 一份份叠加(2026-10-21 现场已叠到 3 份, 只有第一份收包, 其余纯占位),
+# 所以这里用「先删干净再加一条」, 重复执行结果恒定。
+for _p in udp tcp; do
+	while iptables -t nat -C PREROUTING -p $_p --dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
+		iptables -t nat -D PREROUTING -p $_p --dport 53 -j REDIRECT --to-ports 5553 || break
+	done
+	iptables -t nat -A PREROUTING -p $_p --dport 53 -j REDIRECT --to-ports 5553
+done
+unset _p
