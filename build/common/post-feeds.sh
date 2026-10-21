@@ -110,15 +110,16 @@ fi
 # 修: 补回上游钩子; 额外加 [ -e ] 守卫 —— 开机时 passwall 还没建目录、或 stop 后已 rm -rf 时,
 #   不让"挂载源不存在"把 jail 建失败(那会让 dnsmasq 彻底起不来)。
 DNSMASQ_INIT="package/network/services/dnsmasq/files/dnsmasq.init"
-if [ -f "$DNSMASQ_INIT" ]; then
-  if ! grep -q 'config_list_foreach "$cfg" addnmount' "$DNSMASQ_INIT"; then
-    grep -q '^append_extramount()' "$DNSMASQ_INIT" || \
-      perl -0pi -e 's/^append_addnhosts\(\) \{/append_extramount() {\n\t[ -e "\$1" ] || return 0\n\tismounted "\$1" || append EXTRA_MOUNT "\$1"\n}\n\nappend_addnhosts() {/m' "$DNSMASQ_INIT"
-    perl -0pi -e 's/^\tprocd_open_instance \$cfg$/\tconfig_list_foreach "\$cfg" addnmount append_extramount\n\n\tprocd_open_instance \$cfg/m' "$DNSMASQ_INIT"
-  fi
-  # 自检(负向): 钩子必须在位
-  grep -q 'config_list_foreach "$cfg" addnmount' "$DNSMASQ_INIT" || { echo "!! dnsmasq addnmount 钩子补丁未生效"; exit 1; }
-  echo "== dnsmasq init 已补 addnmount 钩子(ujail 可见 passwall ACL 目录) =="
+[ -f "$DNSMASQ_INIT" ] || { echo "!! 找不到 ${DNSMASQ_INIT}(dnsmasq 包结构变了?), addnmount 补丁没地方打"; exit 1; }
+if ! grep -q 'config_list_foreach "$cfg" addnmount' "$DNSMASQ_INIT"; then
+  grep -q '^append_extramount()' "$DNSMASQ_INIT" || \
+    perl -0pi -e 's/^append_addnhosts\(\) \{/append_extramount() {\n\t[ -e "\$1" ] || return 0\n\tismounted "\$1" || append EXTRA_MOUNT "\$1"\n}\n\nappend_addnhosts() {/m' "$DNSMASQ_INIT"
+  perl -0pi -e 's/^\tprocd_open_instance \$cfg$/\tconfig_list_foreach "\$cfg" addnmount append_extramount\n\n\tprocd_open_instance \$cfg/m' "$DNSMASQ_INIT"
 fi
+# 自检(负向): 函数体与调用都必须就位。上游 dnsmasq.init 换结构时这里立刻中止,
+# 而不是"补丁静默没打上、编出来的固件照样每 5 秒崩一次"。
+grep -q '^append_extramount()' "$DNSMASQ_INIT" || { echo "!! append_extramount 未插入(上游 dnsmasq.init 结构变了?)"; exit 1; }
+grep -q 'config_list_foreach "$cfg" addnmount append_extramount' "$DNSMASQ_INIT" || { echo "!! addnmount 调用未插入(procd_open_instance 那行变了?)"; exit 1; }
+echo "== dnsmasq init 已补 addnmount 钩子(ujail 可见 passwall ACL 目录) =="
 
 echo "== post-feeds 修补完成 =="
