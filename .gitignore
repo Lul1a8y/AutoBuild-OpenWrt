@@ -1,1 +1,20 @@
 upstream-audit/
+
+# ---- 构建产物（工作流/本地都会在这些路径生成）----
+/openwrt/
+/openwrt-armvirt/
+/Github_Tags/
+/fail-diag/
+
+# ---- 构建中途产生的临时文件 ----
+.config.old
+*.orig
+*.rej
+*.log
+
+# ---- 编辑器 / 系统垃圾 ----
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
