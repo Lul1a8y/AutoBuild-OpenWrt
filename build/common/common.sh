@@ -175,7 +175,10 @@ fi
 ################################################################################################################
 Diy_chajian() {
 echo
-make defconfig > /dev/null 2>&1
+# 2026-10-21: 删掉这里的 make defconfig —— 工作流「生成配置」步骤在调用本函数后
+# **紧接着**又跑了一次, 且那次是 `make defconfig || { 报错; exit 1; }`。原来这里那次
+# 输出被 /dev/null 吞掉, 失败也看不见, 等于让 -e 静默中止; 保留带错误检查的那次即可。
+# 本函数只用 Chajianlibiao 目录内容生成 CHONGTU, 不读 .config, 去掉无副作用。
 echo "TIME b \"					插件冲突信息\"" > ${Home}/CHONGTU
 
 if [ -n "$(ls -A "${Home}/Chajianlibiao" 2>/dev/null)" ]; then

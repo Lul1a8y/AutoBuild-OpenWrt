@@ -214,7 +214,10 @@ jobs:
         # 2026-10-09: 原先内联在这里的 argon/编译日期/版本钉死/AutoUpdate加固 已合并到 post-feeds.sh
         # (与「修复缓存覆盖」曾是两份重复文本; 该文件幂等, 两处调用同一份定义)
         bash "${PATH1}/post-feeds.sh"
-        ./scripts/feeds install -a > /dev/null 2>&1
+        # 2026-10-21: 去掉前面那次 `feeds install -a`(输出还被 /dev/null 吞掉) —— 紧接着的
+        # `-a -f` 本来就是"全量 + 强制覆盖", 同样的活儿再干一遍纯属浪费; 且第一次失败时
+        # 没人看得见, 真正的结果由 -f 决定。buildroot 的 feeds install 只是建 package/feeds
+        # 下的软链, 不存在"必须先无 -f 跑一遍才能 -f"的依赖。
         ./scripts/feeds install -a -f
         mv "$PATH1/$CONFIG_FILE" .config
         # 2026-10-09: .config 就位后再跑一次 post-feeds.sh —— 补 .config 里 vsftpd/clashoo 反选,
