@@ -665,6 +665,8 @@ jobs:
         
     - name: 云端更新1
       if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
+      env:
+        SIGN_KEY_B64: ${{ secrets.FIRMWARE_SIGN_KEY_B64 }}
       run: |
        cd openwrt
        source "${PATH1}/upgrade.sh" && Diy_Part3
@@ -673,9 +675,25 @@ jobs:
        cd "${Home}/bin/Firmware"
        for f in *; do
          [ -f "$f" ] || continue
-         case "$f" in *.sha256) continue ;; esac
+         case "$f" in *.sha256|*.sig) continue ;; esac
          sha256sum "$f" > "$f.sha256"
        done
+       # 2026-10-21: 用 Ed25519 给校验清单签名(<固件>.sha256.sig), 公钥随固件分发到 /etc/firmware-signing.pub
+       # 设备端先验签名再比 SHA256: 没签名或签名不对的发布会被直接拒绝, 不再只看 HTTPS
+       if [ -z "${SIGN_KEY_B64}" ]; then
+         echo "::error::未配置 FIRMWARE_SIGN_KEY_B64, 拒绝发布无签名固件"
+         echo "::error::否则刷了新固件的设备会拒收这次发布; 生成方法见 build/Lede_source/files/etc/firmware-signing.pub 旁说明"
+         exit 1
+       fi
+       printf '%s' "${SIGN_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/fw-signing.pem"
+       chmod 600 "${RUNNER_TEMP}/fw-signing.pem"
+       rc=0
+       for f in *.sha256; do
+         [ -f "$f" ] || continue
+         openssl pkeyutl -sign -rawin -inkey "${RUNNER_TEMP}/fw-signing.pem" -in "$f" -out "$f.sig" || rc=1
+       done
+       rm -f "${RUNNER_TEMP}/fw-signing.pem"
+       [ "${rc}" -eq 0 ] || { echo "::error::固件签名生成失败, 中止发布"; exit 1; }
        ls -l
         
     - name: 云端更新2

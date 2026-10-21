@@ -372,6 +372,35 @@ if [ "${EXPECT_SHA}" != "${ACTUAL_SHA}" ]; then
 	exit 1
 fi
 TIME g "完整SHA256校验通过"
+
+# 2026-10-21: 校验清单的 Ed25519 签名(公钥随固件分发), 防止"固件 + 校验清单"被同源整体替换
+# 只签 .sha256 这个小文件, 固件本身再由上面的 64 位 SHA256 绑定, 免得把几十 MB 全读进内存
+SIGN_PUB="/etc/firmware-signing.pub"
+SIGN_FILE="${Download_Path}/${SideCar}.sig"
+if ! command -v openssl >/dev/null 2>&1; then
+	TIME r "系统缺少 openssl, 无法验证固件签名, 已中止!"
+	echo
+	exit 1
+fi
+if [ ! -s "${SIGN_PUB}" ]; then
+	TIME r "缺少固件签名公钥 ${SIGN_PUB}, 无法验证固件来源, 已中止!"
+	TIME z "该公钥由固件自带, 缺失说明本机固件被改动过, 请手动刷机"
+	echo
+	exit 1
+fi
+if ! wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}.sig" -O "${SIGN_FILE}" 2>/dev/null || [ ! -s "${SIGN_FILE}" ]; then
+	TIME r "未取得 ${SideCar}.sig, 该发布未签名, 已中止!"
+	TIME z "无签名发布无法确认来源(可能是旧版本, 也可能已被替换), 需要升级请手动刷机"
+	echo
+	exit 1
+fi
+if ! openssl pkeyutl -verify -pubin -inkey "${SIGN_PUB}" -rawin -in "${Download_Path}/${SideCar}" -sigfile "${SIGN_FILE}" >/dev/null 2>&1; then
+	TIME r "固件签名校验失败, 固件来源不可信, 已中止!"
+	echo
+	exit 1
+fi
+TIME g "固件签名校验通过"
+
 export CLOUD_MD5=$(md5sum ${Firmware} | cut -c1-4)
 export CLOUD_256=$(sha256sum ${Firmware} | cut -c4-11)
 export MD5_256=$(echo ${Firmware} | egrep -o "[a-zA-Z0-9]+${Firmware_SFX}" | sed -r "s/(.*)${Firmware_SFX}/\1/")
