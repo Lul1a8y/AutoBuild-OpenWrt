@@ -252,6 +252,18 @@ jobs:
         source "${PATH1}/common.sh" && Diy_chajian > /dev/null 2>&1
         # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
         make defconfig || { echo "!! make defconfig 失败"; exit 1; }
+        # 2026-10-21: 防"包被静默跳过"。buildroot 只收录 Makefile 里含 "call BuildPackage"
+        # 字样的包(include/scan.mk), 缺了就不进 tmp/.packageinfo, .config 写 =y 也没用、
+        # 不报错、固件里就是没有 —— 10-20 那版 ADH 就是这么消失的。
+        # 这里对关键包做收录断言, 失败即中止(发生在编译前, 代价几分钟)。
+        for p in luci-app-adguardhome luci-app-openclash luci-app-mosdns luci-app-passwall; do
+          grep -q "$p" tmp/.packageinfo || {
+            echo "!! $p 未被 buildroot 收录(scan.mk 跳过), 检查其 Makefile 是否含 'call BuildPackage'"
+            grep -rn "PKG_NAME" package/kenzok8/$p/Makefile 2>/dev/null | head -3
+            exit 1
+          }
+        done
+        echo "== 关键包收录断言通过 =="
         ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/config.txt
         # 2026-10-18: 此处的 .config 才是 defconfig 之后的完整配置; 记录来源那一步的 .config 只是片段
         {
