@@ -40,9 +40,35 @@ grep -q "$TTL_PAT" "$TTL_DEFAULT" \
 	|| { echo "!! ttylogin 注入失败(上游 zzz-default-settings 结构已变), 中止编译"; exit 1; }
 echo "== 控制台登录: $(grep -c 'set system.@system\[0\].ttylogin=1' "$TTL_DEFAULT") 处注入, $TTL_DEFAULT =="
 
+# ===== 固定上游版本 =====
+# 2026-10-22: 这些仓库的代码会在构建机上被 make 执行, 而签名私钥(FIRMWARE_SIGN_KEY_B64)
+# 就在同一个 job 里 —— 上游被投毒或 force-push 时, 产物直接跟着变, 且能借 $GITHUB_ENV
+# 把代码带进签名步骤。钉死 sha 后: 上游再变也不会自动进产物, 出问题能用同一个 sha 复现。
+# 升级方式: 手动改下面的 sha(见各条注释里的分支名), 不要改回 master。
+PIN_OPENWRT_PACKAGES="2c749c1011eb05e41cb658b12cb2043f0ca5fd46"   # kenzok8/openwrt-packages master @2026-10-22
+PIN_KENZOK8_SMALL="3d2f0dc56e17b650af43b2021171ee308737cb95"      # kenzok8/small          master @2026-10-22
+PIN_MOSDNS="bd40245303cd0ba56804d49eed5dbc4be2a082ca"              # sbwml/luci-app-mosdns  v5     @2026-10-22
+PIN_OPENCLASH="e553e82e01c697aefbe1555261a503f425e00ccd"           # vernesong/OpenClash    master @2026-10-22
+PIN_HELLOWORLD="2abdc9aa9e19607774dc9789709212b70b8607c6"          # fw876/helloworld       master @2026-10-22
+PIN_LEAN_LUCI="3af75fcd74bac12e771e788ea41994f9b57e20cd"           # coolsnowwolf/luci      master @2026-10-22
+
+# 按 commit sha 浅拉取(先 clone --depth 1 再 checkout 指定 sha 会失败: 浅克隆里没有该对象)
+pin_clone() {
+	_pc_url="$1"; _pc_sha="$2"; _pc_dst="$3"
+	rm -rf "$_pc_dst"
+	git init -q "$_pc_dst" || { echo "!! git init $_pc_dst 失败"; return 1; }
+	git -C "$_pc_dst" remote add origin "$_pc_url" || return 1
+	# GitHub 支持按 sha 拉取(allowAnySHA1InWant); 不支持时直接失败, 不静默回退到 master
+	git -C "$_pc_dst" fetch -q --depth 1 origin "$_pc_sha" \
+		|| { echo "!! $_pc_url 取不到钉死的 commit ${_pc_sha}"; return 1; }
+	git -C "$_pc_dst" checkout -q FETCH_HEAD \
+		|| { echo "!! $_pc_url checkout ${_pc_sha} 失败"; return 1; }
+	echo "== 固定版本: $(basename "$_pc_dst") @ ${_pc_sha}"
+}
+
 # ===== 添加权威插件源 =====
-git clone --depth 1 -b master https://github.com/kenzok8/openwrt-packages package/kenzok8
-git clone --depth 1 -b master https://github.com/kenzok8/small package/kenzok8-small
+pin_clone https://github.com/kenzok8/openwrt-packages "$PIN_OPENWRT_PACKAGES" package/kenzok8 || exit 1
+pin_clone https://github.com/kenzok8/small "$PIN_KENZOK8_SMALL" package/kenzok8-small || exit 1
 
 # ===== geo2txt 补拉：luci-app-mosdns ≥1.7.12 的新依赖（2026-09-03 修复）=====
 # 根因: kenzok8/small 同步 luci-app-mosdns 时漏带上游 sbwml/luci-app-mosdns
@@ -50,8 +76,7 @@ git clone --depth 1 -b master https://github.com/kenzok8/small package/kenzok8-s
 #       pkg_hash_check_unresolved: cannot find dependency geo2txt for luci-app-mosdns
 # 方案: 从 sbwml 官方 v5 分支克隆后拷贝 geo2txt 目录（同 filetransfer 的 clone+cp 做法，
 #       sparse-checkout 在 CI 不稳定不用）
-git clone --depth 1 --single-branch -b v5 \
-	https://github.com/sbwml/luci-app-mosdns.git /tmp/mosdns-upstream
+pin_clone https://github.com/sbwml/luci-app-mosdns "$PIN_MOSDNS" /tmp/mosdns-upstream || exit 1
 cp -r /tmp/mosdns-upstream/geo2txt package/kenzok8-small/geo2txt
 rm -rf /tmp/mosdns-upstream
 
@@ -93,8 +118,8 @@ rm -rf package/kenzok8/luci-app-argon-config
 # 自定义概览页内容通过修改 JS 视图实现（在工作流 yml 中处理）
 
 # ===== 官方源 clone =====
-git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/openclash
-git clone --depth 1 -b master https://github.com/fw876/helloworld.git package/helloworld
+pin_clone https://github.com/vernesong/OpenClash "$PIN_OPENCLASH" package/openclash || exit 1
+pin_clone https://github.com/fw876/helloworld "$PIN_HELLOWORLD" package/helloworld || exit 1
 
 # ===== kenzok8/openwrt-packages 嵌套目录修复 =====
 # kenzok8 仓库有些包存在 pkg/pkg/Makefile 嵌套，编译系统会跳过
@@ -391,8 +416,7 @@ sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/nul
 # ⚠️ 必须添加 menu.d JSON，LuCI 23.05+ 的菜单树从 menu.d 生成，缺了菜单不显示
 # ⚠️ 必须添加 ACL 权限文件，否则 rpcd 不授权页面访问
 # 不用 sparse-checkout（CI 环境经常失败），clone depth 1 后直接 cp
-git clone --depth 1 --single-branch -b master \
-	https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
+pin_clone https://github.com/coolsnowwolf/luci "$PIN_LEAN_LUCI" /tmp/ft-luci || exit 1
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci

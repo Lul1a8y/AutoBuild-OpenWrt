@@ -242,6 +242,18 @@ fi
 grep -q '固件签名与 SHA256 校验通过' "$AU_BIN" || { echo "!! 升级验签补丁未插入 ${AU_BIN}"; exit 1; }
 grep -q '/usr/bin/openssl pkeyutl -verify' "$AU_BIN" || { echo "!! 升级验签补丁内容不完整"; exit 1; }
 echo "== luci-app-autoupdate 的 AutoUpdate 已补强制验签 =="
+
+# 2026-10-22: 同一包里还有个 AutoUpgrade(13627 字节), 是更老的升级脚本副本:
+# 一样 wget --no-check-certificate 下载, 但完全没有验签代码。现在它被"MD5 片段恒不等"
+# 这个缺陷意外挡在 exit 1 上, 属"坏但安全" —— 一旦有人放宽那个校验, 它立刻变成
+# 完整的不验签升级通道。LuCI 只调 AutoUpdate(-c/-u/-k), 没有任何代码调用 AutoUpgrade,
+# 所以直接删掉, 不给它变成后门的机会。
+AU_OLD="$AU_PKG/root/usr/bin/AutoUpgrade"
+if [ -f "$AU_OLD" ]; then
+  rm -f "$AU_OLD"
+  echo "== 已移除无验签的 AutoUpgrade 副本 =="
+fi
+[ -f "$AU_OLD" ] && { echo "!! 无验签的 ${AU_OLD} 删除失败"; exit 1; }
 fi
 
 # 2026-10-22: clash_meta 是入库的 7.8MB UPX 加壳二进制, 随固件以 root 执行(OpenClash 内核)。
