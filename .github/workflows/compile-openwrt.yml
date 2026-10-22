@@ -139,12 +139,16 @@ jobs:
         SRC_URL="https://us.cooluc.com/ubuntu-apt/sources-22.04.list"
         if sudo curl -fsSL --retry 3 --connect-timeout 10 "$SRC_URL" -o /tmp/sources.list \
            && [ -s /tmp/sources.list ] && grep -qE '^deb[[:space:]]' /tmp/sources.list; then
-          # 2026-10-22: 只查"以 deb 开头"拦不住 deb [trusted=yes] http://... —— 那等于跳过 GPG
+          # 2026-10-22: 只查"以 deb 开头"拦不住 deb [trusted=yes] ... —— 那等于跳过 GPG
           # 校验装任意包, 而这一步之后 apt 装的是参与编译的主机工具, 拿到就是 runner root。
-          if grep -qE 'trusted=yes|allow-insecure|allow-unauthenticated' /tmp/sources.list \
-             || grep -qE '^deb[[:space:]]+\[?[^]]*\]?[[:space:]]*http://' /tmp/sources.list; then
-            echo "::error::镜像 apt 源含 trusted=yes 或明文 http, 拒绝使用"
+          if grep -qE 'trusted=yes|allow-insecure|allow-unauthenticated' /tmp/sources.list; then
+            echo "::error::镜像 apt 源带 trusted=yes/allow-insecure, 等于关闭 GPG 校验, 拒绝使用"
             exit 1
+          fi
+          # 明文 http 不阻断: apt 对 Release/Packages 有 GPG 校验, http 只损失传输层机密性。
+          # 上游镜像本来就是 http://archive.ubuntu.com, 拦下来会让构建直接失败(实测 run #98)。
+          if grep -qE '^deb[[:space:]]+\[?[^]]*\]?[[:space:]]*http://' /tmp/sources.list; then
+            echo "::warning::镜像源包含明文 http 地址(apt 仍有 GPG 校验), 继续使用"
           fi
           sudo cp /tmp/sources.list /etc/apt/sources.list
           echo "== apt 源: 已切换到镜像(内容校验通过) =="
