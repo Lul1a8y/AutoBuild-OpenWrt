@@ -23,3 +23,11 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
+
+# ---- 密钥 / 证书(2026-10-22: 私钥一旦本地生成在仓库根, git add -A 就会带进去) ----
+*.pem
+*.key
+*.p12
+*.pfx
+fw-signing*
+!build/Lede_source/files/etc/firmware-signing.pub

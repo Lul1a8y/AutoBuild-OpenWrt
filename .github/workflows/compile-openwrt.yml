@@ -139,6 +139,13 @@ jobs:
         SRC_URL="https://us.cooluc.com/ubuntu-apt/sources-22.04.list"
         if sudo curl -fsSL --retry 3 --connect-timeout 10 "$SRC_URL" -o /tmp/sources.list \
            && [ -s /tmp/sources.list ] && grep -qE '^deb[[:space:]]' /tmp/sources.list; then
+          # 2026-10-22: 只查"以 deb 开头"拦不住 deb [trusted=yes] http://... —— 那等于跳过 GPG
+          # 校验装任意包, 而这一步之后 apt 装的是参与编译的主机工具, 拿到就是 runner root。
+          if grep -qE 'trusted=yes|allow-insecure|allow-unauthenticated' /tmp/sources.list \
+             || grep -qE '^deb[[:space:]]+\[?[^]]*\]?[[:space:]]*http://' /tmp/sources.list; then
+            echo "::error::镜像 apt 源含 trusted=yes 或明文 http, 拒绝使用"
+            exit 1
+          fi
           sudo cp /tmp/sources.list /etc/apt/sources.list
           echo "== apt 源: 已切换到镜像(内容校验通过) =="
         else
@@ -712,11 +719,19 @@ jobs:
        printf '%s' "${SIGN_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/fw-signing.pem"
        chmod 600 "${RUNNER_TEMP}/fw-signing.pem"
        rc=0
+       n=0
        for f in *.sha256; do
          [ -f "$f" ] || continue
          openssl pkeyutl -sign -rawin -inkey "${RUNNER_TEMP}/fw-signing.pem" -in "$f" -out "$f.sig" || rc=1
+         # 2026-10-22: 签完立刻用"随固件分发的公钥"回验一次。secret 轮换后忘了换公钥时,
+         # 这里就会红 —— 否则会发布一批所有设备都拒收的固件(只能手动刷机救)。
+         openssl pkeyutl -verify -pubin -inkey "${GITHUB_WORKSPACE}/build/Lede_source/files/etc/firmware-signing.pub" \
+           -rawin -in "$f" -sigfile "$f.sig" >/dev/null 2>&1 || { echo "::error::私钥与仓库内公钥不配对: $f"; rc=1; }
+         n=$((n + 1))
        done
        rm -f "${RUNNER_TEMP}/fw-signing.pem"
+       # 2026-10-22: 空集 fail-open —— 没有 *.sha256 时上面循环一次都不进, rc 仍是 0。
+       [ "${n}" -gt 0 ] || { echo "::error::没有生成任何 .sha256, 无从签名, 中止发布"; exit 1; }
        [ "${rc}" -eq 0 ] || { echo "::error::固件签名生成失败, 中止发布"; exit 1; }
        ls -l
         

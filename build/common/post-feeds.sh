@@ -123,6 +123,9 @@ AU_UPDATE_EOF
   } > "$AU_DIR/root/etc/openwrt_update"
   for k in GITHUB_LINK RELEASE_DOWNLOAD FIRMWARE_VERSION LUCI_EDITION SOURCE DEVICE_MODEL FIRMWARE_SUFFIX TARGET_BOARD; do
     grep -q "^${k}=" "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 缺少 ${k}(升级链路会在这一步中止)"; exit 1; }
+    # 2026-10-22: 只查"键在"不够 —— 运行时派生那 6 项在 /bin/openwrt_info 缺失时会展开成空串,
+    # 键仍在、值全空, 设备端正则永远匹配不到云端固件。GITHUB_PROXY 本来就该为空, 不查。
+    [ "$k" = "GITHUB_PROXY" ] || grep -qE "^${k}=\".+\"" "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 的 ${k} 为空(升级匹配会失效)"; exit 1; }
   done
 fi
 
@@ -161,6 +164,12 @@ AU_PKG="feeds/luci/applications/luci-app-autoupdate"
 AU_BIN="$AU_PKG/root/usr/bin/AutoUpdate"
 # REGULAR_UPDATE!=true 时这个包根本不会被 clone, 整块跳过(不是缺陷);
 # 但只要包在, 脚本结构不认识就立刻中止 —— 不允许"验签补丁静默没打上"。
+# 2026-10-22: 再收紧一层 —— 声明要发布升级链路(REGULAR_UPDATE=true)却找不到包, 也必须红,
+# 否则会出现"工作流照样出 .sig、设备端根本没有验签代码"的组合。
+if [ "${REGULAR_UPDATE}" = "true" ] && [ ! -d "$AU_PKG" ]; then
+  echo "!! REGULAR_UPDATE=true 但 ${AU_PKG} 不存在, 验签补丁没地方打"
+  exit 1
+fi
 if [ -d "$AU_PKG" ]; then
 [ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
 
@@ -212,7 +221,14 @@ if ! grep -q 'firmware-signing.pub' "$AU_BIN"; then
         -in "$DOWNLOAD_PATH/$SIDECAR" -sigfile "$DOWNLOAD_PATH/$SIDECAR.sig" >/dev/null 2>&1; then
         TIME r "固件签名校验失败, 已中止升级"
     fi
-    EXPECT_SHA=$(awk '$2 == "'"$REMOTE_FIRMWARE"'" { print $1; exit }' "$DOWNLOAD_PATH/$SIDECAR")
+    # 2026-10-22: $REMOTE_FIRMWARE 来自未认证的 zzz_api(上游用 --no-check-certificate 取的),
+    # 早先写成 awk '$2 == "'"$REMOTE_FIRMWARE"'" ...' 会被资产名里的引号闭合字符串、把
+    # 剩余部分当 awk 程序执行(MITM 可 root RCE)。改成 -v 传值 + 字符白名单, 双保险。
+    case "$REMOTE_FIRMWARE" in
+        *[!A-Za-z0-9._+-]*) TIME r "云端固件名含非法字符, 已中止升级" ;;
+        "") TIME r "云端固件名为空, 已中止升级" ;;
+    esac
+    EXPECT_SHA=$(awk -v rf="$REMOTE_FIRMWARE" '$2 == rf { print $1; exit }' "$DOWNLOAD_PATH/$SIDECAR")
     [ -n "$EXPECT_SHA" ] || TIME r "签名清单中没有 ${REMOTE_FIRMWARE} 的 SHA256 记录, 已中止升级"
     if [ "$EXPECT_SHA" != "$(sha256sum "$DOWNLOAD_PATH/$REMOTE_FIRMWARE" | cut -d' ' -f1)" ]; then
         TIME r "固件 SHA256 与签名清单不一致, 已中止升级"
@@ -227,5 +243,20 @@ grep -q '固件签名与 SHA256 校验通过' "$AU_BIN" || { echo "!! 升级验�
 grep -q '/usr/bin/openssl pkeyutl -verify' "$AU_BIN" || { echo "!! 升级验签补丁内容不完整"; exit 1; }
 echo "== luci-app-autoupdate 的 AutoUpdate 已补强制验签 =="
 fi
+
+# 2026-10-22: clash_meta 是入库的 7.8MB UPX 加壳二进制, 随固件以 root 执行(OpenClash 内核)。
+# 仓库里此前没有任何地方校验它 —— 有提交权限的人换一个后门, diff 只显示"字节数没变",
+# 加壳还让静态扫描失效。这里钉死 sha256: 要升级内核, 请连同这里的值一起改并说明来源。
+CLASH_SHA="459c92959289214a8f8d11abea02057382048bc1add8574f04f1223b6095802a"
+CLASH_HIT=0
+for f in build/Lede_source/files/etc/openclash/core/clash_meta \
+         package/base-files/files/etc/openclash/core/clash_meta; do
+  [ -f "$f" ] || continue
+  CLASH_HIT=1
+  got=$(sha256sum "$f" | cut -d' ' -f1)
+  [ "$got" = "$CLASH_SHA" ] || { echo "!! ${f} 的 sha256 与仓库记录不符($got)"; exit 1; }
+done
+[ "$CLASH_HIT" -eq 1 ] || { echo "!! 找不到 clash_meta(OpenClash 内核), 无法校验来源"; exit 1; }
+echo "== clash_meta sha256 校验通过 =="
 
 echo "== post-feeds 修补完成 =="
