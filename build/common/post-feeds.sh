@@ -260,6 +260,28 @@ if [ -f "$AU_OLD" ]; then
   exit 1
 fi
 
+# 2026-10-22: 原脚本在下载完成后会 `opkg remove gzip`(apk 系统是 `apk del`)再升级。
+# 实测这台机器: /bin/gzip -> /usr/libexec/gzip-gnu, busybox 没有 gzip applet, 而 busybox tar
+# 的 -z 是"调用外部 gzip 二进制"实现的(`PATH=/nonexistent busybox tar -czf x` →
+# "tar: can't execute 'gzip'")。紧接着 `-u` 分支要 `sysupgrade -b /mnt/upback.tar.gz`, 那条
+# 命令内部就是 `tar c${TAR_V}zf`, 备份失败后 sysupgrade 会 `rm -f $conf_tar; exit 1`, 于是
+# `[ -f /mnt/upback.tar.gz ]` 为假 → 退化成 `sysupgrade -F -q`(不保留配置) → 升级完配置全丢。
+# 镜像解压走 get_image 的 `busybox zcat`(这个 applet 在, 实测不需要外部 gzip), 所以整段删除。
+if grep -q 'remove gzip' "$AU_BIN"; then
+  perl -0pi -e 's{    # 移除 gzip 包\n.*?\n    fi\n}{    # 2026-10-22: 这里原本会 opkg/apk 删除 gzip。但 busybox tar -z 需要外部 gzip 二进制,\n    #   而下面的 sysupgrade -b 正是 tar czf —— 删掉 gzip 会让备份失败、退化成不保留配置升级。\n    #   镜像解压走 busybox zcat, 不需要这个包, 所以整段去掉。\n}s' "$AU_BIN"
+fi
+if grep -q 'remove gzip' "$AU_BIN"; then echo "!! 移除 gzip 的代码段没删掉(上游改写?), -u 升级会丢配置"; exit 1; fi
+echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置会丢) =="
+
+# 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,
+# 但镜像里没有这个文件(设备实测 ls: No such file or directory), 升级后 cron 每 10 分钟
+# 报一次 exit 127。上游 AutoBuild 自带 check_network, 我们没有, 所以这段一起去掉。
+if grep -q 'check_network' "$AU_BIN"; then
+  perl -0pi -e 's{        # 添加定时任务\n.*?\n        /etc/init.d/cron restart\n}{        # 2026-10-22: 原本这里写 */10 的 check_network 定时任务, 但镜像里没有这个脚本,\n        #   升级后 cron 只会每 10 分钟刷一条 exit 127, 已去掉。\n}s' "$AU_BIN"
+fi
+if grep -q 'usr/bin/check_network' "$AU_BIN"; then echo "!! check_network 定时任务没删掉(上游改写?)"; exit 1; fi
+echo "== 已去掉指向不存在脚本的 check_network 定时任务 =="
+
 # 2026-10-22: LuCI 页面"本地版本"显示成字面量 ${CURRENT_Version}。
 # 我们把 /etc/openwrt_update 写成了 shell 派生写法(LuCI_EDITION="${LUCI_Name}" 之类),
 # AutoUpdate 是 `. /etc/openwrt_update` 求值, 没问题; 但 cbi 模型用 awk 抠字面量,
