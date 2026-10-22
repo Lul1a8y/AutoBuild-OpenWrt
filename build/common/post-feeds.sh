@@ -259,6 +259,23 @@ if [ -f "$AU_OLD" ]; then
   echo "!! 无验签的 ${AU_OLD} 删除失败"
   exit 1
 fi
+
+# 2026-10-22: LuCI 页面"本地版本"显示成字面量 ${CURRENT_Version}。
+# 我们把 /etc/openwrt_update 写成了 shell 派生写法(LuCI_EDITION="${LUCI_Name}" 之类),
+# AutoUpdate 是 `. /etc/openwrt_update` 求值, 没问题; 但 cbi 模型用 awk 抠字面量,
+# 拿到的是 ${CURRENT_Version} 这个字符串本身。改成 source 求值。
+AU_MODEL="$AU_PKG/luasrc/model/cbi/autoupdate/autoupdate.lua"
+if [ -f "$AU_MODEL" ] && grep -q 'info\.local_version.*safe_exec(\[\[awk' "$AU_MODEL"; then
+  sed -i '/info\.local_version.*safe_exec(\[\[awk/s|.*|    info.local_version = safe_exec([[. /etc/openwrt_update 2>/dev/null; echo "$FIRMWARE_VERSION"]])|' "$AU_MODEL"
+fi
+if [ -f "$AU_MODEL" ]; then
+  # 上游改了写法就只警告不中断(只影响这一个显示项, 不影响升级链路)
+  if grep -q 'echo "$FIRMWARE_VERSION"' "$AU_MODEL"; then
+    echo "== LuCI 本地版本改为 source 求值 =="
+  elif grep -q 'info\.local_version.*awk' "$AU_MODEL"; then
+    echo "!! LuCI 本地版本补丁未生效(上游改写了这一行?), 页面仍会显示 \${CURRENT_Version}"
+  fi
+fi
 fi
 
 # 2026-10-22: clash_meta 是入库的 7.8MB UPX 加壳二进制, 随固件以 root 执行(OpenClash 内核)。
