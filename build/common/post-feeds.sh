@@ -99,12 +99,31 @@ if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
   # luci-app-autoupdate 的 /usr/bin/AutoUpdate 要求 GITHUB_LINK 与 RELEASE_DOWNLOAD 同时存在,
   # 否则 Remote_detection 直接 `TIME r "缺少openwrt_update文件"` 退出 ——
   # 实测设备上 `AutoUpdate -c` 报这个错、rc=1, LuCI 的"检查更新/一键升级"整条链路是死的。
+  # 2026-10-22(二): 只有 GITHUB_LINK + RELEASE_DOWNLOAD 还不够 —— Remote_information 拼的
+  # 匹配正则要用 LUCI_EDITION/SOURCE/DEVICE_MODEL/FIRMWARE_SUFFIX/TARGET_BOARD/FIRMWARE_VERSION,
+  # 缺一个就是 "获取固件信息失败"。上游 281677160 是构建期把 9 行全写死; 这里改成运行时从
+  # /bin/openwrt_info 派生(source 之后就有 CURRENT_Version/LUCI_Name/REPO_Name/
+  # DEFAULT_Device/Firmware_Type), 换目标板、换分支都不用手改。
   {
-    printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n'
-    printf 'GITHUB_PROXY=""\n'
-    printf 'RELEASE_DOWNLOAD="https://github.com/Lul1a8y/AutoBuild-OpenWrt/releases/download/AutoUpdate"\n'
+    cat <<'AU_UPDATE_EOF'
+GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"
+GITHUB_PROXY=""
+RELEASE_DOWNLOAD="https://github.com/Lul1a8y/AutoBuild-OpenWrt/releases/download/AutoUpdate"
+AU_UPDATE_EOF
+    cat <<'AU_UPDATE_EOF'
+# 以下 6 项由 /bin/openwrt_info 派生(构建期 build/common/upgrade.sh 的 Diy_Part2 生成)
+[ -f /bin/openwrt_info ] && . /bin/openwrt_info
+FIRMWARE_VERSION="${CURRENT_Version}"
+LUCI_EDITION="${LUCI_Name}"
+SOURCE="${REPO_Name}"
+DEVICE_MODEL="${DEFAULT_Device}"
+FIRMWARE_SUFFIX=".${Firmware_Type#.}"
+TARGET_BOARD="${DEFAULT_Device%%-*}"
+AU_UPDATE_EOF
   } > "$AU_DIR/root/etc/openwrt_update"
-  grep -q '^RELEASE_DOWNLOAD=' "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 缺少 RELEASE_DOWNLOAD(升级链路会报缺少openwrt_update文件)"; exit 1; }
+  for k in GITHUB_LINK RELEASE_DOWNLOAD FIRMWARE_VERSION LUCI_EDITION SOURCE DEVICE_MODEL FIRMWARE_SUFFIX TARGET_BOARD; do
+    grep -q "^${k}=" "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 缺少 ${k}(升级链路会在这一步中止)"; exit 1; }
+  done
 fi
 
 # 2026-10-21: 修 dnsmasq 在 ujail 里看不到 passwall 的 ACL conf-dir
@@ -144,6 +163,30 @@ AU_BIN="$AU_PKG/root/usr/bin/AutoUpdate"
 # 但只要包在, 脚本结构不认识就立刻中止 —— 不允许"验签补丁静默没打上"。
 if [ -d "$AU_PKG" ]; then
 [ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
+
+# 2026-10-22: BOOT_TYPE 转大写。脚本按 x86 + /sys/firmware/efi 判出小写 uefi,
+# 但本仓库发布名是 "-UEFI-"(AutoBuild 命名), grep -E 大小写敏感 → 云端固件永远匹配不到。
+# 设备实测: BOOT_TYPE=uefi 无匹配, BOOT_TYPE=UEFI 命中 ...-202610212346-UEFI-d146ff09ce51.img.gz
+if ! grep -q 'BOOT_TYPE 转大写' "$AU_BIN"; then
+  grep -q '^    # 定义正则表达式以匹配固件信息$' "$AU_BIN" || { echo "!! ${AU_BIN} 缺少正则锚点(BOOT_TYPE 没法转大写)"; exit 1; }
+  awk '!done && /^    # 定义正则表达式以匹配固件信息$/ {
+         print "    # 2026-10-22: BOOT_TYPE 转大写 —— 本仓库固件名用 -UEFI-, 脚本原本给的是小写 uefi,"
+         print "    # grep -E 区分大小写, 不转就永远匹配不到云端固件。"
+         print "    BOOT_TYPE=$(echo \"$BOOT_TYPE\" | tr \"a-z\" \"A-Z\")"
+         done=1
+       } { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+fi
+grep -q '^    BOOT_TYPE=\$(echo ".*" | tr "a-z" "A-Z")$' "$AU_BIN" || { echo "!! BOOT_TYPE 转大写补丁未生效"; exit 1; }
+
+# 2026-10-22: 作废"MD5 片段比对"。原逻辑拿 md5[0:3]+sha256[0:3] 去比文件名里嵌的片段,
+# 本仓库固件名是 12 位 sha256 前缀(d146ff09ce51) → 两者恒不等 → 每次升级都在这里
+# 被 TIME r(= exit 1) 中止, 后面的验签段根本走不到。完整性改由验签段(openssl 验签 +
+# 全量 sha256 比对)负责, 这里只保留 chmod。
+if ! grep -q '完整性已由签名段覆盖' "$AU_BIN"; then
+  perl -0pi -e 's{    # 计算本地固件的 MD5 和 SHA256 组合值.*?        TIME g "MD5对比成功"\n    fi\n}{    # 2026-10-22: 原 MD5 片段比对假设文件名里嵌 md5[0:3]+sha256[0:3], 本仓库是 12 位 sha256\n    # 前缀(d146ff09ce51), 两者恒不等 → 每次升级都在这里被 TIME r(=exit 1) 中止。\n    # 完整性已由签名段覆盖(openssl 验签 + 全量 sha256 比对), 这里只补 chmod。\n    chmod 755 "\$DOWNLOAD_PATH/\$REMOTE_FIRMWARE"\n}s' "$AU_BIN"
+  grep -q '完整性已由签名段覆盖' "$AU_BIN" || { echo "!! MD5 片段比对作废失败(上游脚本改了?)"; exit 1; }
+fi
+
 if ! grep -q 'firmware-signing.pub' "$AU_BIN"; then
   grep -q '^    # 移除 gzip 包$' "$AU_BIN" || { echo "!! ${AU_BIN} 缺少 '移除 gzip 包' 锚点(上游脚本改了?)"; exit 1; }
   PW_BLK=$(mktemp)
