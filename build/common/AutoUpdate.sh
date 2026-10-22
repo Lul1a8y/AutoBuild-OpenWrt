@@ -424,7 +424,11 @@ TIME g "准备更新固件,更新期间请不要断开电源或重启设备 ..."
 }
 sleep 2
 TIME g "正在更新固件,请耐心等待 ..."
-[[ "$(cat ${PKG_List})" =~ gzip ]] && opkg remove gzip > /dev/null 2>&1
+# 2026-10-22: 原来这里会 `opkg remove gzip` 再升级。但 busybox tar 的 -z 是调用外部 gzip
+# 二进制实现的(设备实测 PATH=/nonexistent busybox tar -czf x → "can't execute 'gzip'"),
+# 而下一条 sysupgrade -b 内部就是 tar czf → 删掉 gzip 会让备份失败、退化成不保留配置升级。
+# 镜像解压走 get_image 的 busybox zcat, 不需要外部 gzip, 所以这一步直接去掉。
+# [[ "$(cat ${PKG_List})" =~ gzip ]] && opkg remove gzip > /dev/null 2>&1
 if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	source /etc/deletefile
 	cp -Rf /etc/config/network /mnt/network
