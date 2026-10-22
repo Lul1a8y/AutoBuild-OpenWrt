@@ -742,6 +742,11 @@ jobs:
           wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
         fi
         [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
+        # 2026-10-22: 设备端 /usr/bin/AutoUpdate(luci-app-autoupdate 包内) 固定读
+        # <release>/zzz_api, 而本工作流一直只上传 Github_Tags —— 名字对不上,
+        # 于是"检查更新/一键升级"必然报 获取API数据失败。同一份 JSON 两个名字各传一份。
+        cp -f Github_Tags zzz_api
+        grep -q '"assets"' zzz_api || { echo "!! zzz_api 内容不是 release JSON"; exit 1; }
         
     - name: 云端更新4
       if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.HAS_REPO_TOKEN == 'true'

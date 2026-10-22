@@ -95,7 +95,16 @@ if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
   # 幂等修正(2026-10-09): 原实现每次调用都会再插一行 option github(该文件被多处调用 → 重复累积)
   grep -q "option github 'https://github.com/Lul1a8y/AutoBuild-OpenWrt'" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || \
     sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
-  printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n' > "$AU_DIR/root/etc/openwrt_update"
+  # 2026-10-22: 之前这里只写 GITHUB_LINK 一行, 把 RELEASE_DOWNLOAD 弄丢了。
+  # luci-app-autoupdate 的 /usr/bin/AutoUpdate 要求 GITHUB_LINK 与 RELEASE_DOWNLOAD 同时存在,
+  # 否则 Remote_detection 直接 `TIME r "缺少openwrt_update文件"` 退出 ——
+  # 实测设备上 `AutoUpdate -c` 报这个错、rc=1, LuCI 的"检查更新/一键升级"整条链路是死的。
+  {
+    printf 'GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"\n'
+    printf 'GITHUB_PROXY=""\n'
+    printf 'RELEASE_DOWNLOAD="https://github.com/Lul1a8y/AutoBuild-OpenWrt/releases/download/AutoUpdate"\n'
+  } > "$AU_DIR/root/etc/openwrt_update"
+  grep -q '^RELEASE_DOWNLOAD=' "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 缺少 RELEASE_DOWNLOAD(升级链路会报缺少openwrt_update文件)"; exit 1; }
 fi
 
 # 2026-10-21: 修 dnsmasq 在 ujail 里看不到 passwall 的 ACL conf-dir
@@ -121,5 +130,59 @@ fi
 grep -q '^append_extramount()' "$DNSMASQ_INIT" || { echo "!! append_extramount 未插入(上游 dnsmasq.init 结构变了?)"; exit 1; }
 grep -q 'config_list_foreach "$cfg" addnmount append_extramount' "$DNSMASQ_INIT" || { echo "!! addnmount 调用未插入(procd_open_instance 那行变了?)"; exit 1; }
 echo "== dnsmasq init 已补 addnmount 钩子(ujail 可见 passwall ACL 目录) =="
+
+# 2026-10-22: 固件升级前强制验签 —— 补丁要打在"实际执行的那份"脚本上
+# 背景: 2026-10-21 的验签代码写进了 build/common/AutoUpdate.sh(经 common.sh 拷进
+#   package/base-files/files/bin)。但 luci-app-autoupdate 包自带 root/usr/bin/AutoUpdate,
+#   安装顺序在 base-files 之后 → 把加固版覆盖掉。实测刷了 202610212346 的机器上
+#   /usr/bin/AutoUpdate 仍是包里的 12971 字节旧脚本(无验签、MD5 比对失败只打印不退出)。
+#   于是发布端生成的 .sha256.sig 白生成了。
+# 修: 直接patch包内那份脚本, 在下载校验之后、sysupgrade 之前插入强制验签。
+AU_PKG="feeds/luci/applications/luci-app-autoupdate"
+AU_BIN="$AU_PKG/root/usr/bin/AutoUpdate"
+# REGULAR_UPDATE!=true 时这个包根本不会被 clone, 整块跳过(不是缺陷);
+# 但只要包在, 脚本结构不认识就立刻中止 —— 不允许"验签补丁静默没打上"。
+if [ -d "$AU_PKG" ]; then
+[ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
+if ! grep -q 'firmware-signing.pub' "$AU_BIN"; then
+  grep -q '^    # 移除 gzip 包$' "$AU_BIN" || { echo "!! ${AU_BIN} 缺少 '移除 gzip 包' 锚点(上游脚本改了?)"; exit 1; }
+  PW_BLK=$(mktemp)
+  cat > "$PW_BLK" <<'PW_SIGN_EOF'
+    # 2026-10-22: 升级前强制验签。清单 <固件>.sha256 的 Ed25519 签名必须通过,
+    # 且固件实算 SHA256 必须与清单一致; 任何一项不满足直接中止(TIME r 会 exit 1),
+    # 绝不在未验证的情况下执行 sysupgrade。
+    SIGN_PUB="/etc/firmware-signing.pub"
+    SIDECAR="${REMOTE_FIRMWARE}.sha256"
+    [ -x /usr/bin/openssl ] || TIME r "缺少 /usr/bin/openssl, 无法校验固件签名, 已中止升级"
+    [ -f "$SIGN_PUB" ] || TIME r "缺少固件签名公钥 ${SIGN_PUB}, 已中止升级"
+    rm -f "$DOWNLOAD_PATH/$SIDECAR" "$DOWNLOAD_PATH/$SIDECAR.sig"
+    for base in "$RELEASE_DOWNLOAD1" "$RELEASE_DOWNLOAD2"; do
+        [ -n "$base" ] || continue
+        uclient-fetch -q --timeout=60 "$base/$SIDECAR" -O "$DOWNLOAD_PATH/$SIDECAR" 2>/dev/null || continue
+        uclient-fetch -q --timeout=60 "$base/$SIDECAR.sig" -O "$DOWNLOAD_PATH/$SIDECAR.sig" 2>/dev/null || continue
+        [ -s "$DOWNLOAD_PATH/$SIDECAR" ] && [ -s "$DOWNLOAD_PATH/$SIDECAR.sig" ] && break
+    done
+    if [ ! -s "$DOWNLOAD_PATH/$SIDECAR" ] || [ ! -s "$DOWNLOAD_PATH/$SIDECAR.sig" ]; then
+        TIME r "未取得 ${SIDECAR} 或其签名, 该发布未签名, 已中止升级"
+    fi
+    if ! /usr/bin/openssl pkeyutl -verify -pubin -inkey "$SIGN_PUB" -rawin \
+        -in "$DOWNLOAD_PATH/$SIDECAR" -sigfile "$DOWNLOAD_PATH/$SIDECAR.sig" >/dev/null 2>&1; then
+        TIME r "固件签名校验失败, 已中止升级"
+    fi
+    EXPECT_SHA=$(awk '$2 == "'"$REMOTE_FIRMWARE"'" { print $1; exit }' "$DOWNLOAD_PATH/$SIDECAR")
+    [ -n "$EXPECT_SHA" ] || TIME r "签名清单中没有 ${REMOTE_FIRMWARE} 的 SHA256 记录, 已中止升级"
+    if [ "$EXPECT_SHA" != "$(sha256sum "$DOWNLOAD_PATH/$REMOTE_FIRMWARE" | cut -d' ' -f1)" ]; then
+        TIME r "固件 SHA256 与签名清单不一致, 已中止升级"
+    fi
+    TIME g "固件签名与 SHA256 校验通过"
+PW_SIGN_EOF
+  awk -v blk="$PW_BLK" '!done && /^    # 移除 gzip 包$/ { while ((getline line < blk) > 0) print line; close(blk); done=1 } { print }' \
+    "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+  rm -f "$PW_BLK"
+fi
+grep -q '固件签名与 SHA256 校验通过' "$AU_BIN" || { echo "!! 升级验签补丁未插入 ${AU_BIN}"; exit 1; }
+grep -q '/usr/bin/openssl pkeyutl -verify' "$AU_BIN" || { echo "!! 升级验签补丁内容不完整"; exit 1; }
+echo "== luci-app-autoupdate 的 AutoUpdate 已补强制验签 =="
+fi
 
 echo "== post-feeds 修补完成 =="
