@@ -253,7 +253,12 @@ if [ -f "$AU_OLD" ]; then
   rm -f "$AU_OLD"
   echo "== 已移除无验签的 AutoUpgrade 副本 =="
 fi
-[ -f "$AU_OLD" ] && { echo "!! 无验签的 ${AU_OLD} 删除失败"; exit 1; }
+# 用 if 而不是 `[ -f ] && {...}`: 后者在文件已删除时会返回 1, 作为块内最后一条命令
+# 会把整个 post-feeds 的退出码带成 1(实测模拟脚本 rc=1), 构建侧一检查就会误判失败。
+if [ -f "$AU_OLD" ]; then
+  echo "!! 无验签的 ${AU_OLD} 删除失败"
+  exit 1
+fi
 fi
 
 # 2026-10-22: clash_meta 是入库的 7.8MB UPX 加壳二进制, 随固件以 root 执行(OpenClash 内核)。
