@@ -1,0 +1,35 @@
+#!/bin/sh
+# 2026-10-22: ddns-scripts 自带两个示例服务(myddns_ipv4 / myddns_ipv6), 它们的
+# lookup_host 是 yourhost.example.com、用户名是 your_username, 而且都没有写
+# `enabled` —— ddns-scripts 把"缺省"当作启用, 于是每次开机都会去解析这个不存在的
+# 域名, 日志里稳定出现:
+#     ddns-scripts: myddns_ipv4 exit WITH ERROR '1'
+#     ddns-scripts: myddns_ipv6 exit WITH ERROR '1'
+#
+# 这里只删除"仍然是占位符"的示例条目, 用户自己配置过的真实 DDNS 不受影响;
+# ddns 服务本身保持启用, 以后在 LuCI 里新加一条真实配置就能直接生效。
+[ -f /etc/config/ddns ] || exit 0
+
+changed=0
+for s in $(uci -q show ddns | sed -n 's/^\(ddns\.[^=]*\)=service$/\1/p'); do
+	host="$(uci -q get "${s}.lookup_host")"
+	domain="$(uci -q get "${s}.domain")"
+	user="$(uci -q get "${s}.username")"
+
+	placeholder=0
+	case "${host}${domain}" in
+		*example.com*|*example.net*) placeholder=1 ;;
+	esac
+	[ "${user}" = "your_username" ] && placeholder=1
+	[ "${placeholder}" = "1" ] || continue
+
+	uci -q delete "${s}"
+	changed=1
+done
+
+if [ "${changed}" = "1" ]; then
+	uci -q commit ddns
+	logger -t ddns-defaults "已移除 ddns-scripts 的示例服务条目"
+fi
+
+exit 0
