@@ -1,15 +1,14 @@
 #!/bin/sh
-# 2026-10-23: ttyd 绑回 LAN —— 在电脑浏览器上点 LuCI 的「终端」标签能直接用。
+# 2026-10-23: ttyd 保持 LAN 监听, 登录由 /bin/login 把关(与上游默认一致)。
 #
-# 背景: ttyd 默认 interface='@lan', 即 192.168.50.2:7681, 局域网内任意主机打开
-# http://192.168.50.2:7681/ 就能以 root 身份拿到一个 shell。曾试探过两条加固路线:
-#   · 只绑 127.0.0.1 —— 最彻底, 但电脑浏览器就连不上了, 只能 ssh -L 转发;
-#   · 走 TLS(-S -C -K) —— 本包带的 ttyd 没有 TLS 支持, 启动直接 rc=1(实测)。
-# 所以这里保留 LAN 监听, 安全靠 credential(Basic Auth): 没有凭据时返回 401。
-#
-# 本仓库不写入固定口令(仓库是公开的), 首次开机后在 LuCI 里设置:
-#   系统 → TTYD终端 → 凭据, 填 `用户名:密码`, 保存并应用。
-# 下面只在"发现 interface 被改成了回环"时才动它, 不覆盖你手工设的其它接口。
+# 说明: 这个文件只做一件事 —— 如果 uci 里 interface 被改成了 127.0.0.1, 改回 @lan。
+# 起因: 我曾把 ttyd 改成只绑回环(想减少 LAN 暴露), 结果电脑浏览器点 LuCI 的「终端」
+# 就连不上; 而本包的 ttyd 没有 TLS 支持(带 -S 启动直接 rc=1, 实测), 加不了 https。
+# 结论: 维持上游默认(192.168.50.2:7681 + /bin/login), 不设 HTTP Basic Auth ——
+# 打开页面只是看到 login 提示, 没有 root 口令照样登不进去。
+# 若以后想收紧: uci set ttyd.@ttyd[0].interface='127.0.0.1', 从电脑用
+#   ssh -L 7681:127.0.0.1:7681 -p 12306 root@192.168.50.2
+
 [ -f /etc/config/ttyd ] || exit 0
 
 cur="$(uci -q get ttyd.@ttyd[0].interface)"
@@ -17,12 +16,7 @@ cur="$(uci -q get ttyd.@ttyd[0].interface)"
 
 uci -q set ttyd.@ttyd[0].interface='@lan'
 uci -q commit ttyd
-
-if [ -z "$(uci -q get ttyd.@ttyd[0].credential)" ]; then
-	logger -t ttyd-defaults "警告: ttyd 无凭据, 局域网内任何人都能拿到 root shell, 请在 LuCI 里设置凭据"
-fi
-
 /etc/init.d/ttyd restart >/dev/null 2>&1
-logger -t ttyd-defaults "ttyd 由 127.0.0.1 改回 @lan"
+logger -t ttyd-defaults "ttyd 由 127.0.0.1 改回 @lan(登录仍由 /bin/login 把关)"
 
 exit 0
