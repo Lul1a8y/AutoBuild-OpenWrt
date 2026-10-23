@@ -138,13 +138,14 @@ fi
 #   config_list_foreach "$cfg" addnmount append_extramount)。于是 ujail 从不挂载该目录,
 #   dnsmasq 在 jail 里读到 conf-dir 指向不存在的路径 → 拒绝启动。
 #   实测: 同一份 conf 在宿主 root 下 dnsmasq --test 通过, 只有 jail 里失败。
-# 修: 补回上游钩子; 额外加 [ -e ] 守卫 —— 开机时 passwall 还没建目录、或 stop 后已 rm -rf 时,
-#   不让"挂载源不存在"把 jail 建失败(那会让 dnsmasq 彻底起不来)。
+# 修: 补回上游钩子; 额外加"先建目录再挂载" —— 开机时 passwall 还没建 ACL 目录时,
+#   光 return 0 只是不挂载, dnsmasq 进 jail 后照样读不到 conf-dir、照样起不来;
+#     mkdir -p 之后再挂, 挂载源与 conf-dir 同时成立。已存在(含指向真实目录的软链)时无副作用。
 DNSMASQ_INIT="package/network/services/dnsmasq/files/dnsmasq.init"
 [ -f "$DNSMASQ_INIT" ] || { echo "!! 找不到 ${DNSMASQ_INIT}(dnsmasq 包结构变了?), addnmount 补丁没地方打"; exit 1; }
 if ! grep -q 'config_list_foreach "$cfg" addnmount' "$DNSMASQ_INIT"; then
   grep -q '^append_extramount()' "$DNSMASQ_INIT" || \
-    perl -0pi -e 's/^append_addnhosts\(\) \{/append_extramount() {\n\t[ -e "\$1" ] || return 0\n\tismounted "\$1" || append EXTRA_MOUNT "\$1"\n}\n\nappend_addnhosts() {/m' "$DNSMASQ_INIT"
+    perl -0pi -e 's/^append_addnhosts\(\) \{/append_extramount() {\n\t[ -n "\$1" ] || return 0\n\tmkdir -p "\$1" 2>\/dev\/null\n\tismounted "\$1" || append EXTRA_MOUNT "\$1"\n}\n\nappend_addnhosts() {/m' "$DNSMASQ_INIT"
   perl -0pi -e 's/^\tprocd_open_instance \$cfg$/\tconfig_list_foreach "\$cfg" addnmount append_extramount\n\n\tprocd_open_instance \$cfg/m' "$DNSMASQ_INIT"
 fi
 # 自检(负向): 函数体与调用都必须就位。上游 dnsmasq.init 换结构时这里立刻中止,
@@ -173,19 +174,24 @@ fi
 if [ -d "$AU_PKG" ]; then
 [ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
 
-# 2026-10-22: BOOT_TYPE 转大写。脚本按 x86 + /sys/firmware/efi 判出小写 uefi,
-# 但本仓库发布名是 "-UEFI-"(AutoBuild 命名), grep -E 大小写敏感 → 云端固件永远匹配不到。
-# 设备实测: BOOT_TYPE=uefi 无匹配, BOOT_TYPE=UEFI 命中 ...-202610212346-UEFI-d146ff09ce51.img.gz
-if ! grep -q 'BOOT_TYPE 转大写' "$AU_BIN"; then
-  grep -q '^    # 定义正则表达式以匹配固件信息$' "$AU_BIN" || { echo "!! ${AU_BIN} 缺少正则锚点(BOOT_TYPE 没法转大写)"; exit 1; }
+# 2026-10-23: BOOT_TYPE 按发布名精确映射(不是简单大写化)。
+# 上游脚本按 x86 + /sys/firmware/efi 判出小写 uefi/legacy/sysupgrade, 而本仓库发布名
+# 是 -UEFI- / -Legacy- / -Sysupg-(build/common/upgrade.sh:131/137/149), grep -E 大小写敏感。
+# 早先的 tr a-z A-Z 只能让 UEFI 对上, Legacy/Sysupg 被大写化后反而永久失配。
+if ! grep -q 'BOOT_TYPE 精确映射' "$AU_BIN"; then
+  grep -q '^    # 定义正则表达式以匹配固件信息$' "$AU_BIN" || { echo "!! ${AU_BIN} 缺少正则锚点(BOOT_TYPE 没法映射)"; exit 1; }
   awk '!done && /^    # 定义正则表达式以匹配固件信息$/ {
-         print "    # 2026-10-22: BOOT_TYPE 转大写 —— 本仓库固件名用 -UEFI-, 脚本原本给的是小写 uefi,"
-         print "    # grep -E 区分大小写, 不转就永远匹配不到云端固件。"
-         print "    BOOT_TYPE=$(echo \"$BOOT_TYPE\" | tr \"a-z\" \"A-Z\")"
+         print "    # 2026-10-23: BOOT_TYPE 精确映射 —— 发布名是 -UEFI-/-Legacy-/-Sysupg-, grep -E 区分大小写,"
+         print "    # 整体大写化只会让 UEFI 对上, 另外两种永远匹配不到云端固件。"
+         print "    case \"$BOOT_TYPE\" in"
+         print "        uefi|UEFI) BOOT_TYPE=UEFI ;;"
+         print "        legacy|Legacy|LEGACY) BOOT_TYPE=Legacy ;;"
+         print "        sysupgrade|Sysupg|SYSUPGRADE) BOOT_TYPE=Sysupg ;;"
+         print "    esac"
          done=1
        } { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
 fi
-grep -q '^    BOOT_TYPE=\$(echo ".*" | tr "a-z" "A-Z")$' "$AU_BIN" || { echo "!! BOOT_TYPE 转大写补丁未生效"; exit 1; }
+grep -q '^        sysupgrade|Sysupg|SYSUPGRADE) BOOT_TYPE=Sysupg ;;$' "$AU_BIN" || { echo "!! BOOT_TYPE 精确映射补丁未生效"; exit 1; }
 
 # 2026-10-22: 作废"MD5 片段比对"。原逻辑拿 md5[0:3]+sha256[0:3] 去比文件名里嵌的片段,
 # 本仓库固件名是 12 位 sha256 前缀(d146ff09ce51) → 两者恒不等 → 每次升级都在这里
@@ -208,10 +214,15 @@ if ! grep -q 'firmware-signing.pub' "$AU_BIN"; then
     [ -x /usr/bin/openssl ] || TIME r "缺少 /usr/bin/openssl, 无法校验固件签名, 已中止升级"
     [ -f "$SIGN_PUB" ] || TIME r "缺少固件签名公钥 ${SIGN_PUB}, 已中止升级"
     rm -f "$DOWNLOAD_PATH/$SIDECAR" "$DOWNLOAD_PATH/$SIDECAR.sig"
-    for base in "$RELEASE_DOWNLOAD1" "$RELEASE_DOWNLOAD2"; do
+    # 2026-10-23: RELEASE_DOWNLOAD1="${GITHUB_PROXY}/${RELEASE_DOWNLOAD}" 在 proxy 为空时
+    # 会拼成 "/https://..." 这种畸形地址, 每轮白等一次超时; 这里只在 proxy 非空时才用。
+    # 另外补 --no-check-certificate: 主固件下载就是这么取的, 设备缺 CA 时不能让清单先挂掉。
+    SIGN_BASES="$RELEASE_DOWNLOAD2"
+    [ -n "$GITHUB_PROXY" ] && SIGN_BASES="$GITHUB_PROXY/$RELEASE_DOWNLOAD $SIGN_BASES"
+    for base in $SIGN_BASES; do
         [ -n "$base" ] || continue
-        uclient-fetch -q --timeout=60 "$base/$SIDECAR" -O "$DOWNLOAD_PATH/$SIDECAR" 2>/dev/null || continue
-        uclient-fetch -q --timeout=60 "$base/$SIDECAR.sig" -O "$DOWNLOAD_PATH/$SIDECAR.sig" 2>/dev/null || continue
+        uclient-fetch -q --timeout=60 --no-check-certificate "$base/$SIDECAR" -O "$DOWNLOAD_PATH/$SIDECAR" 2>/dev/null || continue
+        uclient-fetch -q --timeout=60 --no-check-certificate "$base/$SIDECAR.sig" -O "$DOWNLOAD_PATH/$SIDECAR.sig" 2>/dev/null || continue
         [ -s "$DOWNLOAD_PATH/$SIDECAR" ] && [ -s "$DOWNLOAD_PATH/$SIDECAR.sig" ] && break
     done
     if [ ! -s "$DOWNLOAD_PATH/$SIDECAR" ] || [ ! -s "$DOWNLOAD_PATH/$SIDECAR.sig" ]; then

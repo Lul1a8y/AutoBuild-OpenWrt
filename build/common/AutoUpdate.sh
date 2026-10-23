@@ -430,7 +430,10 @@ TIME g "正在更新固件,请耐心等待 ..."
 # 镜像解压走 get_image 的 busybox zcat, 不需要外部 gzip, 所以这一步直接去掉。
 # [[ "$(cat ${PKG_List})" =~ gzip ]] && opkg remove gzip > /dev/null 2>&1
 if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
-	source /etc/deletefile
+	# 2026-10-23: /etc/deletefile 由 $DELETE 控制, 只有 Lienol/Mortal 的 diy-part.sh 会写,
+	# Lede 分支从来不生成。原来裸 source 一个不存在的文件在 ash 下会直接退出(rc=2),
+	# 等于手动升级通道在某些 shell 下静默失败; 加 [ -f ] 守卫, 存在才 source。
+	[ -f /etc/deletefile ] && . /etc/deletefile
 	cp -Rf /etc/config/network /mnt/network
 	mv -f /etc/config/luci /etc/config/luci-
 	sysupgrade -b /mnt/back.tar.gz

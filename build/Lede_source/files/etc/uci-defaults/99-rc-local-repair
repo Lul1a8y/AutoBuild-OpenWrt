@@ -1,0 +1,30 @@
+#!/bin/sh
+# 2026-10-23: 修掉"升级后仍带着旧 rc.local"的问题。
+#
+# /etc/rc.local 在 /lib/upgrade/keep.d/base-files-essential:11 的保留清单里, sysupgrade
+# 会把它当"用户自定义文件"原样带过去。于是从 2026-10-17 之前的固件一路升上来的机器,
+# /etc/rc.local 一直是老内容: 关完 EEE 后无条件 /etc/init.d/network restart +
+# /etc/init.d/uhttpd restart。实测后果(2026-10-23 开机日志):
+#   13:25:00 netifd: Interface 'wan' is disabled
+#   13:25:01 dropbear: Network interface 'lan' has no suitable IP address(es)!
+#   13:25:01 dropbear[3900]: Early exit: Terminated by signal
+#   13:25:13 firewall: Reloading firewall due to ifup of wan (pppoe-wan)
+# 即每次开机 LAN 无地址 2~4 秒、SSH 被杀一次、PPPoE 被拆重拨(公网 IP 可能变)。
+#
+# 镜像里那份(/rom/etc/rc.local)是构建期注入的, 带 hermes-managed 标记、不含 restart。
+# 这里只在"当前文件确实带了 restart"时用镜像版本覆盖, 用户自己加过别的命令也只有在
+# 同时踩到 restart 这一条时才会被替换 —— 不做无条件的 clobber。
+IMG=/rom/etc/rc.local
+CUR=/etc/rc.local
+
+[ -f "${IMG}" ] || exit 0
+[ -f "${CUR}" ] || exit 0
+grep -q 'hermes-managed' "${IMG}" || exit 0
+
+# 当前文件没有 restart 就什么都不做(已经是新版, 或者是用户自己写的内容)
+grep -qE '/etc/init\.d/(network|uhttpd)[[:space:]]+restart' "${CUR}" || exit 0
+
+cp -f "${IMG}" "${CUR}" && chmod 755 "${CUR}"
+logger -t rc-local-fix "已用镜像版本覆盖 /etc/rc.local(去掉 network/uhttpd restart)"
+
+exit 0
