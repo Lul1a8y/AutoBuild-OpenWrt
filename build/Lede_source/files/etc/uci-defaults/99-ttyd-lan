@@ -1,0 +1,28 @@
+#!/bin/sh
+# 2026-10-23: ttyd 绑回 LAN —— 在电脑浏览器上点 LuCI 的「终端」标签能直接用。
+#
+# 背景: ttyd 默认 interface='@lan', 即 192.168.50.2:7681, 局域网内任意主机打开
+# http://192.168.50.2:7681/ 就能以 root 身份拿到一个 shell。曾试探过两条加固路线:
+#   · 只绑 127.0.0.1 —— 最彻底, 但电脑浏览器就连不上了, 只能 ssh -L 转发;
+#   · 走 TLS(-S -C -K) —— 本包带的 ttyd 没有 TLS 支持, 启动直接 rc=1(实测)。
+# 所以这里保留 LAN 监听, 安全靠 credential(Basic Auth): 没有凭据时返回 401。
+#
+# 本仓库不写入固定口令(仓库是公开的), 首次开机后在 LuCI 里设置:
+#   系统 → TTYD终端 → 凭据, 填 `用户名:密码`, 保存并应用。
+# 下面只在"发现 interface 被改成了回环"时才动它, 不覆盖你手工设的其它接口。
+[ -f /etc/config/ttyd ] || exit 0
+
+cur="$(uci -q get ttyd.@ttyd[0].interface)"
+[ "${cur}" = "127.0.0.1" ] || exit 0
+
+uci -q set ttyd.@ttyd[0].interface='@lan'
+uci -q commit ttyd
+
+if [ -z "$(uci -q get ttyd.@ttyd[0].credential)" ]; then
+	logger -t ttyd-defaults "警告: ttyd 无凭据, 局域网内任何人都能拿到 root shell, 请在 LuCI 里设置凭据"
+fi
+
+/etc/init.d/ttyd restart >/dev/null 2>&1
+logger -t ttyd-defaults "ttyd 由 127.0.0.1 改回 @lan"
+
+exit 0
