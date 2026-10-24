@@ -293,6 +293,23 @@ fi
 if grep -q 'usr/bin/check_network' "$AU_BIN"; then echo "!! check_network 定时任务没删掉(上游改写?)"; exit 1; fi
 echo "== 已去掉指向不存在脚本的 check_network 定时任务 =="
 
+# 2026-10-24: 代理地址为空时别拼出畸形 URL。
+# 上游: RELEASE_DOWNLOAD1="${GITHUB_PROXY}/${RELEASE_DOWNLOAD}" —— GITHUB_PROXY 为空时得到
+# "/https://github.com/..."(前面多一个斜杠), uclient-fetch 报 "Failed to allocate uclient context"
+# 再回落到 RELEASE_DOWNLOAD2 才成功。设备日志里每次 -c 都有这么一段红字, 纯噪音。
+if ! grep -q 'RELEASE_DOWNLOAD1="${GITHUB_PROXY:+' "$AU_BIN"; then
+  sed -i 's|^        RELEASE_DOWNLOAD1="${GITHUB_PROXY}/${RELEASE_DOWNLOAD}"$|        # 2026-10-24: 代理为空时不拼前导斜杠(否则每次 -c 都先报一次 URL 畸形)\n        RELEASE_DOWNLOAD1="${GITHUB_PROXY:+${GITHUB_PROXY}/}${RELEASE_DOWNLOAD}"|' "$AU_BIN"
+fi
+grep -q 'RELEASE_DOWNLOAD1="${GITHUB_PROXY:+' "$AU_BIN" || { echo "!! RELEASE_DOWNLOAD1 前导斜杠没去掉(上游脚本改了?)"; exit 1; }
+
+# 2026-10-24: 上面几处补丁都用 `> "$AU_BIN.new" && mv` 写过文件, 新文件按 umask 建出来是
+# 0644 —— opkg 照 644 装进镜像, 结果 /usr/bin/AutoUpdate 不可执行(LuCI 直接 exec 它),
+# 自动更新整条链路废掉。设备实测: -rw-r--r-- root root 15925 /usr/bin/AutoUpdate,
+# `AutoUpdate -c` → "Permission denied"。这里补回 755 并断言可执行。
+chmod 755 "$AU_BIN"
+[ -x "$AU_BIN" ] || { echo "!! ${AU_BIN} 没有可执行位, 自动更新会 Permission denied"; exit 1; }
+echo "== AutoUpdate 权限已确保 755 =="
+
 # 2026-10-22: LuCI 页面"本地版本"显示成字面量 ${CURRENT_Version}。
 # 我们把 /etc/openwrt_update 写成了 shell 派生写法(LuCI_EDITION="${LUCI_Name}" 之类),
 # AutoUpdate 是 `. /etc/openwrt_update` 求值, 没问题; 但 cbi 模型用 awk 抠字面量,
