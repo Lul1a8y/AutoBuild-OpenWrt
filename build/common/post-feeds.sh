@@ -221,8 +221,14 @@ if ! grep -q 'firmware-signing.pub' "$AU_BIN"; then
     [ -n "$GITHUB_PROXY" ] && SIGN_BASES="$GITHUB_PROXY/$RELEASE_DOWNLOAD $SIGN_BASES"
     for base in $SIGN_BASES; do
         [ -n "$base" ] || continue
-        uclient-fetch -q --timeout=60 --no-check-certificate "$base/$SIDECAR" -O "$DOWNLOAD_PATH/$SIDECAR" 2>/dev/null || continue
-        uclient-fetch -q --timeout=60 --no-check-certificate "$base/$SIDECAR.sig" -O "$DOWNLOAD_PATH/$SIDECAR.sig" 2>/dev/null || continue
+        # 2026-10-24: wget 优先。设备实测 uclient-fetch 打 GitHub release 直链一律
+        # "Connection timed out"(rc=4), 而 wget-ssl 正常, 且它是本包的直接依赖。
+        wget -q --no-check-certificate --timeout=60 -t 1 "$base/$SIDECAR" -O "$DOWNLOAD_PATH/$SIDECAR" 2>/dev/null \
+          || uclient-fetch -q --timeout=60 --no-check-certificate "$base/$SIDECAR" -O "$DOWNLOAD_PATH/$SIDECAR" 2>/dev/null \
+          || continue
+        wget -q --no-check-certificate --timeout=60 -t 1 "$base/$SIDECAR.sig" -O "$DOWNLOAD_PATH/$SIDECAR.sig" 2>/dev/null \
+          || uclient-fetch -q --timeout=60 --no-check-certificate "$base/$SIDECAR.sig" -O "$DOWNLOAD_PATH/$SIDECAR.sig" 2>/dev/null \
+          || continue
         [ -s "$DOWNLOAD_PATH/$SIDECAR" ] && [ -s "$DOWNLOAD_PATH/$SIDECAR.sig" ] && break
     done
     if [ ! -s "$DOWNLOAD_PATH/$SIDECAR" ] || [ ! -s "$DOWNLOAD_PATH/$SIDECAR.sig" ]; then
@@ -301,6 +307,24 @@ if ! grep -q 'RELEASE_DOWNLOAD1="${GITHUB_PROXY:+' "$AU_BIN"; then
   sed -i 's|^        RELEASE_DOWNLOAD1="${GITHUB_PROXY}/${RELEASE_DOWNLOAD}"$|        # 2026-10-24: 代理为空时不拼前导斜杠(否则每次 -c 都先报一次 URL 畸形)\n        RELEASE_DOWNLOAD1="${GITHUB_PROXY:+${GITHUB_PROXY}/}${RELEASE_DOWNLOAD}"|' "$AU_BIN"
 fi
 grep -q 'RELEASE_DOWNLOAD1="${GITHUB_PROXY:+' "$AU_BIN" || { echo "!! RELEASE_DOWNLOAD1 前导斜杠没去掉(上游脚本改了?)"; exit 1; }
+
+# 2026-10-24: 下载器主备对调。设备实测(GitHub release 直链, 连续 4 次):
+#   uclient-fetch --no-check-certificate -O f "$URL"  → rc=4, Connection timed out, 文件不生成
+#   wget -q --no-check-certificate -O g "$URL"        → rc=0, 122 字节
+# 而 wget-ssl 是 luci-app-autoupdate 的直接依赖(opkg whatdepends wget-ssl 可见), 必然在镜像里。
+# 上游那两处 zzz_api 偏偏是 uclient 优先、wget 兜底 → 每次 -c/-u 先白等一个 40s 超时。
+# 固件本体那段本来就是 wget 优先, 不动。这里只把 zzz_api 的主备对调。
+if ! grep -q 'zzz_api 主备对调' "$AU_BIN"; then
+  # 注意: perl 替换串里的 $ 必须写成 \$ —— 否则被 perl 当变量插值, 会替换成空字符串
+  # (第一版就踩了这个坑: 打出来的脚本变成 `wget ... "/zzz_api" -O ""`, 差点静默废掉下载)。
+  perl -0pi -e 's{if ! uclient-fetch --no-check-certificate --timeout=40 "\$RELEASE_DOWNLOAD1/zzz_api" -O "\$tmpapi_version"; then}{# 2026-10-24: zzz_api 主备对调(uclient-fetch 打 GitHub 直链会超时, wget 正常)\n                if ! wget -q --no-check-certificate --no-use-server-timestamps --timeout=40 -t 1 "\$RELEASE_DOWNLOAD1/zzz_api" -O "\$tmpapi_version"; then}g' "$AU_BIN"
+  perl -0pi -e 's{wget -q --show-progress --no-check-certificate --no-use-server-timestamps --timeout=40 -t 1 "\$RELEASE_DOWNLOAD2/zzz_api" -O "\$tmpapi_version"}{uclient-fetch --no-check-certificate --timeout=40 "\$RELEASE_DOWNLOAD2/zzz_api" -O "\$tmpapi_version"}g' "$AU_BIN"
+fi
+grep -q 'zzz_api 主备对调' "$AU_BIN" || { echo "!! zzz_api 主备对调没打上(上游脚本改了?)"; exit 1; }
+# 断言替换后变量没被吃掉(踩过: perl 插值把 \$RELEASE_DOWNLOAD1 变成空串)
+grep -q 'wget -q --no-check-certificate --no-use-server-timestamps --timeout=40 -t 1 "\$RELEASE_DOWNLOAD1/zzz_api" -O "\$tmpapi_version"' "$AU_BIN" \
+  || { echo "!! zzz_api 主备对调后变量被吞(perl 插值?), 下载地址会变成 /zzz_api"; exit 1; }
+echo "== zzz_api 下载改为 wget 优先 =="
 
 # 2026-10-24: 上面几处补丁都用 `> "$AU_BIN.new" && mv` 写过文件, 新文件按 umask 建出来是
 # 0644 —— opkg 照 644 装进镜像, 结果 /usr/bin/AutoUpdate 不可执行(LuCI 直接 exec 它),
