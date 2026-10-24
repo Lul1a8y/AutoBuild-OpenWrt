@@ -721,6 +721,18 @@ jobs:
          case "$f" in *.sha256|*.sig) continue ;; esac
          sha256sum "$f" > "$f.sha256"
        done
+       # 2026-10-24: 再发布一份总清单 sha256sums(按 bin/Firmware 里的最终文件名)。
+       # 之前 targets 目录里那份清单记的是改名前的 openwrt-* 名字, 且从未随发布上传,
+       # 用户拿到固件后只能逐个看 .sha256; 现在 `sha256sum -c sha256sums` 一条命令即可。
+       rm -f sha256sums
+       for f in *; do
+         [ -f "$f" ] || continue
+         case "$f" in *.sha256|*.sig|sha256sums) continue ;; esac
+         sha256sum "$f" >> sha256sums
+       done
+       [ -s sha256sums ] || { echo "::error::sha256sums 未生成"; exit 1; }
+       sha256sum -c sha256sums --quiet || { echo "::error::sha256sums 自检失败"; exit 1; }
+       echo "== sha256sums 已生成(最终文件名, $(wc -l < sha256sums) 项) =="
        # 2026-10-21: 用 Ed25519 给校验清单签名(<固件>.sha256.sig), 公钥随固件分发到 /etc/firmware-signing.pub
        # 设备端先验签名再比 SHA256: 没签名或签名不对的发布会被直接拒绝, 不再只看 HTTPS
        if [ -z "${SIGN_KEY_B64}" ]; then
