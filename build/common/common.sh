@@ -78,6 +78,8 @@ if [[ ${REGULAR_UPDATE} == "true" ]]; then
 	git clone https://github.com/281677160/luci-app-autoupdate "${APP_DIR}" || { echo "!! luci-app-autoupdate 拉取失败, 构建中止"; exit 1; }
 	git -C "${APP_DIR}" checkout -q 04f2a3708ec0bb216c6dec2e51695f6a7e906a56 || { echo "!! luci-app-autoupdate 固定 commit 校验失败, 构建中止"; exit 1; }
 	cp -Rf "${PATH1}"/{AutoUpdate.sh,replace.sh} package/base-files/files/bin
+	# 2026-10-24: 发布说明让用户执行 bash /bin/AutoUpdate.sh, 拷贝失败时原来构建照样绿
+	[ -x package/base-files/files/bin/AutoUpdate.sh ] || { echo "!! /bin/AutoUpdate.sh 未就位(发布说明里的手动升级命令会失效)"; exit 1; }
 	sed -i 's/"定时更新"/"更新固件"/g' feeds/luci/applications/luci-app-autoupdate/po/zh-cn/autoupdate.po
 	sed -i 's/定时更新 LUCI/固件更新 LUCI/g' feeds/luci/applications/luci-app-autoupdate/po/zh-cn/autoupdate.po
 fi

@@ -173,6 +173,12 @@ else
 			export AutoUpdate_Mode=1
 			export Upgrade_Options="sysupgrade -q"
 		;;
+		-f)
+			# 2026-10-24: 原来 case 里列了 -f 却没有分支, Upgrade_Options 为空,
+			# 最后变成直接执行 .img.gz 文件(bash: cannot execute binary file)。
+			export Upgrade_Options="sysupgrade -F"
+			TIME h "执行: 强制更新固件(保留配置)"
+		;;
 		esac
 	;;
 	-c)
@@ -270,8 +276,13 @@ echo "云端版本：${CLOUD_Version}"
 # "云端更新", 文案也对得上, 不存在"静默降级"(审计第 5 条是误报)。
 # 真正的隐患: 换成 sh/ash 跑会报 out of range, 三个分支全不进, 直接落到下载+sysupgrade;
 # 版本串前缀一改(lede→immortalwrt)负数大小也会乱。故只取末尾数字, 显式三分支, 解析失败即中止。
+# 2026-10-24: x86 的 CLOUD_Version 带尾部 "-UEFI"/"-Legacy", egrep -o "[0-9]+$" 得到空串,
+# 于是下面恒触发"版本号解析失败"直接退出 —— 手动升级通道(bash /bin/AutoUpdate.sh)全挂。
+# 改用 CLOUD_sion(不含启动类型后缀)取时间戳, 再兜底从整串里抽最长数字段。
 Cur_Num="$(echo "${CURRENT_Version}" | egrep -o "[0-9]+$")"
-Cloud_Num="$(echo "${CLOUD_Version}" | egrep -o "[0-9]+$")"
+Cloud_Num="$(echo "${CLOUD_sion}" | egrep -o "[0-9]+$")"
+[ -n "${Cloud_Num}" ] || Cloud_Num="$(echo "${CLOUD_Version}" | egrep -o "[0-9]{8,}" | tail -n 1)"
+[ -n "${Cur_Num}" ] || Cur_Num="$(echo "${CURRENT_Version}" | egrep -o "[0-9]{8,}" | tail -n 1)"
 if [[ -z "${Cur_Num}" || -z "${Cloud_Num}" ]]; then
 	TIME r "版本号解析失败(本地: ${CURRENT_Version} / 云端: ${CLOUD_Version}),已中止,请手动确认!"
 	echo
@@ -316,44 +327,30 @@ echo "固件名称：${Firmware}"
 echo "下载保存：${Download_Path}"
 echo "固件体积：${CLOUD_Firmware_Size}M"
 cd ${Download_Path}
-[[ "$(cat ${Download_Path}/Installed_PKG_List)" =~ curl ]] && {
-	export Google_Check=$(curl -I -s --connect-timeout 8 google.com -w %{http_code} | tail -n1)
-	if [ ! "$Google_Check" == 301 ];then
-		TIME g "正在下载云端固件,请耐心等待..."
-		wget -q --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O ${Firmware}
-		if [[ $? -ne 0 ]];then
-			wget -q --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O ${Firmware}
-			if [[ $? -ne 0 ]];then
-				TIME r "下载云端固件失败,请尝试手动安装!"
-				echo
-				exit 1
-			else
-				TIME y "下载云端固件成功!"
-			fi
-		else
-			TIME y "下载云端固件成功!"
-		fi
-	else
-		TIME g "正在下载云端固件,请耐心等待..."
-		wget -q --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O ${Firmware}
-		if [[ $? -ne 0 ]];then
-			wget -q --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O ${Firmware}
-			if [[ $? -ne 0 ]];then
-				TIME r "下载云端固件失败,请尝试手动安装!"
-				echo
-				exit 1
-			else
-				TIME y "下载云端固件成功!"
-			fi
-		else
-			TIME y "下载云端固件成功!"
-		fi
+# 2026-10-24: 原来整段下载被 `Installed_PKG_List =~ curl` 门控且没有 else ——
+# 精简配置里去掉 OpenClash 后 curl 不存在, 就完全不下固件, 随后在 .sha256 那一步报"未取得清单"。
+# 改成无条件下载; curl 只用来判断是否处于代理环境, 仅影响提示文案。
+export Google_Check="$(command -v curl >/dev/null 2>&1 && curl -I -s --connect-timeout 8 google.com -w %{http_code} | tail -n1)"
+if [ "${Google_Check}" = "301" ]; then
+	TIME g "检测到代理环境, 正在下载云端固件,请耐心等待..."
+else
+	TIME g "正在下载云端固件,请耐心等待..."
+fi
+wget -q --no-check-certificate --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O ${Firmware}
+if [[ $? -ne 0 ]];then
+	wget -q --no-check-certificate --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O ${Firmware}
+	if [[ $? -ne 0 ]];then
+		TIME r "下载云端固件失败,请尝试手动安装!"
+		echo
+		exit 1
 	fi
-}
+fi
+TIME y "下载云端固件成功!"
 # 2026-10-09: 若发布里附带 <固件>.sha256 清单, 先用完整 SHA256 校验固件
 # (下面基于"文件名 12 位片段"的校验只能防传输损坏: 文件与文件名一起被换就失效)
 SideCar="${Firmware}.sha256"
-if ! wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null || [ ! -s "${Download_Path}/${SideCar}" ]; then
+# 2026-10-24: 与包内 /usr/bin/AutoUpdate 行为对齐, 缺 --no-check-certificate 时设备 CA 旧/时钟不准会直接失败
+if ! wget -q --no-check-certificate --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null || [ ! -s "${Download_Path}/${SideCar}" ]; then
 	TIME r "未取得 ${SideCar},无法校验固件完整性,已中止!"
 	TIME z "请确认该发布已附带 ${SideCar} 校验清单,不要跳过校验刷机"
 	echo
@@ -388,7 +385,7 @@ if [ ! -s "${SIGN_PUB}" ]; then
 	echo
 	exit 1
 fi
-if ! wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}.sig" -O "${SIGN_FILE}" 2>/dev/null || [ ! -s "${SIGN_FILE}" ]; then
+if ! wget -q --no-check-certificate --timeout=15 --tries=1 "${Github_Release}/${SideCar}.sig" -O "${SIGN_FILE}" 2>/dev/null || [ ! -s "${SIGN_FILE}" ]; then
 	TIME r "未取得 ${SideCar}.sig, 该发布未签名, 已中止!"
 	TIME z "无签名发布无法确认来源(可能是旧版本, 也可能已被替换), 需要升级请手动刷机"
 	echo

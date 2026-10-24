@@ -92,9 +92,13 @@ fi
 AU_DIR="feeds/luci/applications/luci-app-autoupdate"
 if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
   sed -i 's|uci get "autoupdate\.$config_section\.github"|uci -q get "autoupdate.$config_section.github"|' "$AU_DIR/root/etc/init.d/autoupdate"
-  # 幂等修正(2026-10-09): 原实现每次调用都会再插一行 option github(该文件被多处调用 → 重复累积)
-  grep -q "option github 'https://github.com/Lul1a8y/AutoBuild-OpenWrt'" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || \
-    sed -i "0,/^config login/s//config login\n\toption github 'https:\/\/github.com\/Lul1a8y\/AutoBuild-OpenWrt'/" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
+  # 2026-10-24: 三处仓库地址原来写死成 Lul1a8y/AutoBuild-OpenWrt(fork/改名场景会出现
+  # "LuCI 查新仓库、固件下旧仓库"的双源)。改为优先用构建期 env 的 Github(workflow :13
+  # 就是 ${{github.repository}}), 本地手工跑时退回默认值。
+  FW_GITHUB="${Github:-https://github.com/Lul1a8y/AutoBuild-OpenWrt}"
+  FW_GITHUB="${FW_GITHUB%/}"
+  grep -q "option github '${FW_GITHUB}'" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || \
+    sed -i "0,/^config login/s##config login\n\toption github '${FW_GITHUB}'#" "$AU_DIR/root/etc/config/autoupdate" 2>/dev/null || true
   # 2026-10-22: 之前这里只写 GITHUB_LINK 一行, 把 RELEASE_DOWNLOAD 弄丢了。
   # luci-app-autoupdate 的 /usr/bin/AutoUpdate 要求 GITHUB_LINK 与 RELEASE_DOWNLOAD 同时存在,
   # 否则 Remote_detection 直接 `TIME r "缺少openwrt_update文件"` 退出 ——
@@ -104,11 +108,13 @@ if [ -d "$AU_DIR" ] && [ -f "$AU_DIR/root/etc/init.d/autoupdate" ]; then
   # 缺一个就是 "获取固件信息失败"。上游 281677160 是构建期把 9 行全写死; 这里改成运行时从
   # /bin/openwrt_info 派生(source 之后就有 CURRENT_Version/LUCI_Name/REPO_Name/
   # DEFAULT_Device/Firmware_Type), 换目标板、换分支都不用手改。
+  # 2026-10-24(二): RELEASE_DOWNLOAD 改成由 GITHUB_LINK 派生 —— 包内 init 脚本在 LuCI 里
+  # 改仓库地址时只 sed 了 GITHUB_LINK 那一行, 派生写法能让下载地址自动跟着走。
   {
     cat <<'AU_UPDATE_EOF'
-GITHUB_LINK="https://github.com/Lul1a8y/AutoBuild-OpenWrt"
+GITHUB_LINK="@@FW_GITHUB@@"
 GITHUB_PROXY=""
-RELEASE_DOWNLOAD="https://github.com/Lul1a8y/AutoBuild-OpenWrt/releases/download/AutoUpdate"
+RELEASE_DOWNLOAD="${GITHUB_LINK}/releases/download/AutoUpdate"
 AU_UPDATE_EOF
     cat <<'AU_UPDATE_EOF'
 # 以下 6 项由 /bin/openwrt_info 派生(构建期 build/common/upgrade.sh 的 Diy_Part2 生成)
@@ -120,7 +126,8 @@ DEVICE_MODEL="${DEFAULT_Device}"
 FIRMWARE_SUFFIX=".${Firmware_Type#.}"
 TARGET_BOARD="${DEFAULT_Device%%-*}"
 AU_UPDATE_EOF
-  } > "$AU_DIR/root/etc/openwrt_update"
+  } | sed "s|@@FW_GITHUB@@|${FW_GITHUB}|g" > "$AU_DIR/root/etc/openwrt_update"
+  grep -q "^GITHUB_LINK=\"${FW_GITHUB}\"$" "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 的 GITHUB_LINK 未按构建仓库写入"; exit 1; }
   for k in GITHUB_LINK RELEASE_DOWNLOAD FIRMWARE_VERSION LUCI_EDITION SOURCE DEVICE_MODEL FIRMWARE_SUFFIX TARGET_BOARD; do
     grep -q "^${k}=" "$AU_DIR/root/etc/openwrt_update" || { echo "!! openwrt_update 缺少 ${k}(升级链路会在这一步中止)"; exit 1; }
     # 2026-10-22: 只查"键在"不够 —— 运行时派生那 6 项在 /bin/openwrt_info 缺失时会展开成空串,

@@ -86,7 +86,10 @@ GET_TARGET_INFO() {
 }
 
 Diy_Part1() {
+# 2026-10-24: 这是 luci-app-autoupdate 进镜像的唯一入口, 原来 sed 静默失效也不会报错 ——
+# 上游把 DEFAULT_PACKAGES 改成 := 或换行后, 构建照样绿, 但镜像里没有 LuCI 升级页。
 sed -i 's/DEFAULT_PACKAGES +=/DEFAULT_PACKAGES += luci-app-autoupdate luci-app-ttyd/g' target/linux/*/Makefile
+grep -q 'luci-app-autoupdate' target/linux/*/Makefile || { echo "!! Diy_Part1: 未把 luci-app-autoupdate 加进 DEFAULT_PACKAGES"; exit 1; }
 }
 
 Diy_Part2() {
