@@ -1,0 +1,16 @@
+# 2026-10-24: 别让 AdGuardHome 核心在 sysupgrade 后消失。
+#
+# 背景: 镜像里没有 ADH 核心 —— .config 里 CONFIG_PACKAGE_adguardhome 未选,
+# diy-part.sh 又删掉了 package/kenzok8/adguardhome; 现有的 /usr/bin/AdGuardHome
+# 是 LuCI 页面在运行时下载的(36MB, 在 overlay 上, 不在 /rom)。
+#
+# /etc/init.d/AdGuardHome 启动时如果发现 binpath 不存在, 会:
+#   _do_redirect 0                      # 撤掉 dnsmasq 的 server=127.0.0.1#5553
+#   /usr/share/AdGuardHome/update_core.sh &   # 后台从 static.adguard.com 拉 11.8MB
+#   exit 0
+# 也就是说每次刷机后开机都要重新下核心, 期间 LAN 的 53 已经被 firewall.user
+# 全部 REDIRECT 到 5553, 没人在听 -> 客户端 DNS 全超时, 直到核心下完(约 1 分钟),
+# 拉不到就一直坏着。
+#
+# 把核心放进保留清单, 升级时随配置备份带走, 刷完立刻可用。
+/usr/bin/AdGuardHome
