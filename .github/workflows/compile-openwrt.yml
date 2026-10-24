@@ -639,6 +639,14 @@ jobs:
         find . \( -name "*vmlinuz*" -o -name "*Image*" -o -name "*rootfs.img.gz*" -o -name "*kernel.bin*" \) -exec rm -rf {} +
         rm -rf packages
         rename -v "s/^openwrt/${{ env.date1 }}-${{ env.CODE }}/" *
+        # 2026-10-24: 上面的 sha256sums 是在改名之前校验的, 清单里记的还是 openwrt-* 老名字;
+        # rename 后清单与文件对不上, 用户 `sha256sum -c sha256sums` 必然 No such file or directory。
+        # 改名后按最终文件名重算一遍再发布。
+        if [ -f sha256sums ]; then
+          sha256sum *.img.gz > sha256sums
+          sha256sum -c sha256sums --quiet || { echo "!! 改名后重算 sha256sums 自检失败"; exit 1; }
+          echo "== sha256sums 已按最终文件名重算 =="
+        fi
         # 2026-10-17: rename 之后再确认一次(发布/上传都用通配, 空目录也会"成功")
         ls *combined*.img.gz >/dev/null 2>&1 || { echo "!! rename 后未找到 combined 镜像"; ls -l | head -20; exit 1; }
         [ "$(ls -1 | wc -l)" -ge 2 ] || { echo "!! 发布目录资产少于 2 个"; exit 1; }

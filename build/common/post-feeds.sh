@@ -152,6 +152,7 @@ fi
 # 而不是"补丁静默没打上、编出来的固件照样每 5 秒崩一次"。
 grep -q '^append_extramount()' "$DNSMASQ_INIT" || { echo "!! append_extramount 未插入(上游 dnsmasq.init 结构变了?)"; exit 1; }
 grep -q 'config_list_foreach "$cfg" addnmount append_extramount' "$DNSMASQ_INIT" || { echo "!! addnmount 调用未插入(procd_open_instance 那行变了?)"; exit 1; }
+sh -n "$DNSMASQ_INIT" || { echo "!! dnsmasq.init 打补丁后语法错误"; exit 1; }
 echo "== dnsmasq init 已补 addnmount 钩子(ujail 可见 passwall ACL 目录) =="
 
 # 2026-10-22: 固件升级前强制验签 —— 补丁要打在"实际执行的那份"脚本上
@@ -293,7 +294,7 @@ echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置
 # 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,
 # 但镜像里没有这个文件(设备实测 ls: No such file or directory), 升级后 cron 每 10 分钟
 # 报一次 exit 127。上游 AutoBuild 自带 check_network, 我们没有, 所以这段一起去掉。
-if grep -q 'check_network' "$AU_BIN"; then
+if grep -q 'usr/bin/check_network' "$AU_BIN"; then
   perl -0pi -e 's{        # 添加定时任务\n.*?\n        /etc/init.d/cron restart\n}{        # 2026-10-22: 原本这里写 */10 的 check_network 定时任务, 但镜像里没有这个脚本,\n        #   升级后 cron 只会每 10 分钟刷一条 exit 127, 已去掉。\n}s' "$AU_BIN"
 fi
 if grep -q 'usr/bin/check_network' "$AU_BIN"; then echo "!! check_network 定时任务没删掉(上游改写?)"; exit 1; fi
@@ -332,7 +333,10 @@ echo "== zzz_api 下载改为 wget 优先 =="
 # `AutoUpdate -c` → "Permission denied"。这里补回 755 并断言可执行。
 chmod 755 "$AU_BIN"
 [ -x "$AU_BIN" ] || { echo "!! ${AU_BIN} 没有可执行位, 自动更新会 Permission denied"; exit 1; }
-echo "== AutoUpdate 权限已确保 755 =="
+# 2026-10-24: 上面几个 perl -0pi 都是跨行非贪婪替换, 上游改缩进/结构时可能只替换一半。
+# 只 grep 标记挡不住"半改但标记已被一并删掉"的情况, 这里补一道语法检查兜底。
+sh -n "$AU_BIN" || { echo "!! ${AU_BIN} 打补丁后语法错误(perl 跨行替换只改了半截?)"; exit 1; }
+echo "== AutoUpdate 权限已确保 755, 语法检查通过 =="
 
 # 2026-10-22: LuCI 页面"本地版本"显示成字面量 ${CURRENT_Version}。
 # 我们把 /etc/openwrt_update 写成了 shell 派生写法(LuCI_EDITION="${LUCI_Name}" 之类),
