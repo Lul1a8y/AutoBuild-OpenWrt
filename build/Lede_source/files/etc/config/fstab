@@ -5,7 +5,11 @@ config global 'globals'
 	option auto_mount '1'
 	option delay_root '5'
 
+# 2026-10-27: 原来的 config mount(target '/boot', uuid 'auto') 是 x86 模板残留:
+# uuid 'auto' 不是合法 UUID, block/fstab 会把它当"自动挑盘", 开机把 sda1 挂到 /boot,
+# 而 /etc/fstab 本体是空的 —— 结果 mount 输出里 /dev/sda1 on /boot 出现两次(挂了两遍)。
+# 运行期没有任何东西需要 /boot, 置 enabled 0 保留条目便于以后手工启用。
 config mount
 	option target '/boot'
 	option uuid 'auto'
-	option enabled '1'
+	option enabled '0'

@@ -13,6 +13,7 @@ echo -e "${Yellow}命令用途：
 
 bash /bin/AutoUpdate.sh				[保留配置更新]
 bash /bin/AutoUpdate.sh	-n			[不保留配置更新]
+bash /bin/AutoUpdate.sh	-f			[强制更新固件(保留配置)]
 bash /bin/AutoUpdate.sh	-g			[把固件更改成其他作者固件,前提是你编译了有附带定时更新插件的其他作者的固件]
 bash /bin/AutoUpdate.sh	-c			[更换Github地址]
 bash /bin/AutoUpdate.sh	-t			[执行测试模式(只运行,不安装,查看更新固件操作流程)]
@@ -206,6 +207,22 @@ else
 			Input_Other="${Input_Other:-"$Github"}"
 			[[ "${Github}" != "${Input_Other}" ]] && {
 				sed -i "s?${Github}?${Input_Other}?g" /bin/openwrt_info
+				# 2026-10-27: /bin/openwrt_info 只有本脚本(手动升级通道)读; LuCI 升级页和
+				# /usr/bin/AutoUpdate 读的是 /etc/openwrt_update 里的 GITHUB_LINK。
+				# 以前只改 openwrt_info, 换完仓库会出现"LuCI 查新仓库、固件仍从旧仓库下"的双源。
+				if [ -f /etc/openwrt_update ]; then
+					Safe_URL="$(printf '%s' "${Input_Other}" | sed 's/[\\&]/\\&/g')"
+					sed -i "s?^GITHUB_LINK=.*?GITHUB_LINK=\"${Safe_URL}\"?" /etc/openwrt_update
+					unset Safe_URL
+					# 2026-10-27: 原来失败只打印提示, 随后 exit 0 —— 同步失败也报成功。
+					if grep -q "^GITHUB_LINK=\"${Input_Other}\"$" /etc/openwrt_update; then
+						TIME y "/etc/openwrt_update 的 GITHUB_LINK 已同步"
+					else
+						TIME r "/etc/openwrt_update 同步失败, LuCI 升级页仍指向旧仓库"
+						echo
+						exit 1
+					fi
+				fi
 				unset Input_Other
 				exit 0
 			} || {
@@ -260,8 +277,16 @@ export CLOUD_Version="$(echo ${CLOUD_Firmware} | egrep -o "${REPO_Name}-${DEFAUL
 export Firmware_Name="$(echo ${CLOUD_Firmware} | egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"
 export Firmware="${CLOUD_Firmware}"
 export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | awk 'END {print}')"
-let X=$(grep -n "${Firmware}" ${Download_Tags} | tail -1 | cut -d : -f 1)-4
-let CLOUD_Firmware_Size=$(sed -n "${X}p" ${Download_Tags} | egrep -o "[0-9]+" | awk '{print ($1)/1048576}' | awk -F. '{print $1}')+1
+# 2026-10-27: 原来用 grep -n "${Firmware}" 取最后一行再回退 4 行, 按位置猜体积。
+# GitHub API 给每个资产加了 "digest" 字段后资产在 JSON 里的行数变了: tail -1 命中
+# 下载地址行, X-4 落到 "digest" 行 -> 体积恒为 0, 空间检查形同虚设(日志还打印 0M)。
+CLOUD_Firmware_Size="$(jq -r --arg n "${Firmware}" '[.assets[]|select(.name==$n)|.size][0]' "${Download_Tags}" 2>/dev/null)"
+[[ "${CLOUD_Firmware_Size}" =~ ^[0-9]+$ ]] || CLOUD_Firmware_Size=0
+if [[ "${CLOUD_Firmware_Size}" -gt 0 ]]; then
+	CLOUD_Firmware_Size=$(( (CLOUD_Firmware_Size + 1048575) / 1048576 ))
+else
+	TIME g "未能从 API 取得固件体积, 跳过 tmp 空间检查"
+fi
 echo -e "\n本地版本：${CURRENT_Ver}"
 echo "云端版本：${CLOUD_Version}"	
 [[ "${TMP_Available}" -lt "${CLOUD_Firmware_Size}" ]] && {
