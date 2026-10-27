@@ -301,6 +301,26 @@ jobs:
             exit 1
           }
         done
+        # 2026-10-27: 上面只证明"包被收录", 不证明"被选中"。defconfig 碰到依赖不满足会
+        # 把 CONFIG_PACKAGE_x 直接丢掉(不报错), 固件里就少这个包。这里断言 defconfig 之后的
+        # 最终 .config, 与种子文件里的 =y 逐项对齐(列的都是 build/Lede_source/.config 里显式选中的
+        # 核心组件, 一旦被丢说明依赖链断了, 应当中止而不是产出一个残缺固件)。
+        # 2026-10-28: luci-app-autoupdate 的源码只在 REGULAR_UPDATE=true 时 clone(common.sh:74-79),
+        # 关掉 OTA 时 defconfig 会丢掉 =y —— 无条件断言会让合法开关值不可构建。改为
+        # "源码在就必须被选中"。kmod-drm-i915 也列进来: 它一旦被 defconfig 丢掉, 下面 i915 段
+        # 会整段跳过并只打 warning, 固件少了模块却 CI 绿色。
+        ASSERT_PKGS="luci-app-adguardhome luci-app-openclash luci-app-mosdns luci-app-passwall"
+        ASSERT_PKGS="$ASSERT_PKGS luci-app-ttyd mosdns sing-box chinadns-ng kmod-drm-i915"
+        if [ -d feeds/luci/applications/luci-app-autoupdate ]; then
+          ASSERT_PKGS="$ASSERT_PKGS luci-app-autoupdate"
+        fi
+        for p in $ASSERT_PKGS; do
+          grep -q "^CONFIG_PACKAGE_${p}=y$" .config || {
+            echo "!! ${p} 未出现在最终 .config(=y) —— 依赖不满足被 defconfig 丢弃"
+            grep -n "PACKAGE_${p}\\b" tmp/.packageinfo | head -3
+            exit 1
+          }
+        done
         echo "== 关键包收录断言通过 =="
         ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/config.txt
         # 2026-10-18: 此处的 .config 才是 defconfig 之后的完整配置; 记录来源那一步的 .config 只是片段
@@ -508,8 +528,12 @@ jobs:
         cd openwrt
         ROOTDIR="$(ls -d build_dir/target-*/root-* 2>/dev/null | head -1)"
         if [ -z "$ROOTDIR" ]; then
-          echo "::warning::未找到 build_dir/target-*/root-* 目录, 跳过产物自检"
-          exit 0
+          # 2026-10-28: 原来是 exit 0 —— 步骤算成功、env.status 仍是 success, 后面
+          # 「整理文件/上传/发布/云端更新」照常跑, 版本字面量、ucode、i915、Firmware Date、
+          # gzip、sha256sums 六类断言全部静默跳过, 等于发一份没校验过的固件。
+          echo "::error::未找到 build_dir/target-*/root-*, 无法校验产物, 拒绝发布"
+          echo "status=failed" >> "$GITHUB_ENV"
+          exit 1
         fi
         echo "== 产物自检 root: $ROOTDIR =="
         REL="$ROOTDIR/etc/openwrt_release"; OSR="$ROOTDIR/usr/lib/os-release"
@@ -615,13 +639,17 @@ jobs:
       with:
         name: .config_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
         path: config.txt
-        
+        # 2026-10-28: 默认只告警。config.txt 由 diffconfig.sh 生成, 它失败时该步骤会是空的
+        # 而整次构建仍绿 —— 上传类步骤统一改成缺文件即失败。
+        if-no-files-found: error
+
     - name: 上传文件
       if: env.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: filename+ipk_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
-        path: openwrt/bin            
+        path: openwrt/bin
+        if-no-files-found: error            
     
     - name: 整理文件
       id: organizer
@@ -705,6 +733,10 @@ jobs:
         token: ${{ secrets.REPO_TOKEN }}
         bodyFile: "update_log.txt"
         artifacts: "${{ env.FIRMWARE }}/*"
+        # 2026-10-28: 默认 false —— 该 action 先创建"已发布"的 release 再逐个传资产,
+        # 任一资产上传失败只打 warning, 于是线上留下空/半空 release 而 CI 是绿的。
+        # 设为 true 后上传出问题直接让步骤失败, 失败日志也会被归档。
+        artifactErrorsFailBuild: true
         
     - name: 云端更新1
       if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
