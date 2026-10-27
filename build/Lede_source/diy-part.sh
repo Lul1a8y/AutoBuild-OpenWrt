@@ -318,6 +318,24 @@ if [ -n "$MOSDNS_INIT" ] && [ -f "$MOSDNS_INIT" ]; then
 	# 只删 json_add_string 行: 原版/补丁版二进制都兼容
 	# (config_get log_size 保留——纯读取无副作用, 且 LuCI 界面"日志大小"项仍有效)
 	sed -i '/json_add_string "size" "\$log_size"/d' "$MOSDNS_INIT"
+	# 2026-10-28: 上面三条 sed 全是"按上游字面量替换", kenzok8/small 每天同步, 一旦写法变了
+	# 就静默失效 —— 后果分别是开机 DNS 重定向失败 / mosdns 读错配置 / crash loop, 三种都表现为
+	# "偶尔断流"。改为逐条断言, 不通过就中止构建而不是产出一个会断 DNS 的固件。
+	grep -qx 'START=99' "$MOSDNS_INIT" || {
+		echo "!! mosdns init 的 START 未改成 99(上游写法变了): $(grep -n '^START=' "$MOSDNS_INIT" | head -1)"
+		exit 1
+	}
+	grep -qx 'CONF="/var/etc/mosdns.json"' "$MOSDNS_INIT" || {
+		echo "!! mosdns init 的 CONF 未指向 /var/etc/mosdns.json: $(grep -n '^CONF=' "$MOSDNS_INIT" | head -1)"
+		exit 1
+	}
+	if grep -qF 'json_add_string "size" "$log_size"' "$MOSDNS_INIT"; then
+		echo "!! mosdns init 仍会注入 log.size 键(旧 mosdns 二进制会 crash loop)"
+		exit 1
+	fi
+else
+	echo "!! 未找到 mosdns 的 init 脚本(package/kenzok8-small 结构变了), 跳过 START/CONF 修补会断 DNS"
+	exit 1
 fi
 
 # ===== 概览页修复：board.json 定义网络拓扑 =====
