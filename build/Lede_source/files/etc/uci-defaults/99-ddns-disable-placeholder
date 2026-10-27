@@ -8,28 +8,42 @@
 #
 # 这里只删除"仍然是占位符"的示例条目, 用户自己配置过的真实 DDNS 不受影响;
 # ddns 服务本身保持启用, 以后在 LuCI 里新加一条真实配置就能直接生效。
+#
+# 2026-10-28 修正两处:
+# 1) 原来是边遍历边删除。uci show 对匿名段输出 ddns.@service[N], 删掉 @service[0]
+#    之后其余匿名段会重新编号, 循环里下一条 @service[1] 已经指向不存在的段,
+#    uci get 全空 → 判定为非占位 → 漏删。改为先收集、再统一删除。
+# 2) 原来"域名命中示例"与"用户名等于 your_username"是或的关系, 用户照模板改了
+#    域名却忘了改用户名时, 开机就被静默删掉整条真实配置。改成: 域名是示例,
+#    且用户名没填或仍是占位符, 才算示例条目(留得下用户填过的任何真实值)。
 [ -f /etc/config/ddns ] || exit 0
 
-changed=0
+todo=""
 for s in $(uci -q show ddns | sed -n 's/^\(ddns\.[^=]*\)=service$/\1/p'); do
 	host="$(uci -q get "${s}.lookup_host")"
 	domain="$(uci -q get "${s}.domain")"
 	user="$(uci -q get "${s}.username")"
 
-	placeholder=0
 	case "${host}${domain}" in
-		*example.com*|*example.net*) placeholder=1 ;;
+		*example.com*|*example.net*) ;;
+		*) continue ;;
 	esac
-	[ "${user}" = "your_username" ] && placeholder=1
-	[ "${placeholder}" = "1" ] || continue
+	if [ -n "${user}" ] && [ "${user}" != "your_username" ]; then
+		continue
+	fi
+	todo="${s} ${todo}"
+done
 
-	uci -q delete "${s}"
-	changed=1
+changed=0
+for s in ${todo}; do
+	uci -q delete "${s}" && {
+		changed=1
+		logger -t ddns-defaults "已移除 ddns 示例条目 ${s}"
+	}
 done
 
 if [ "${changed}" = "1" ]; then
 	uci -q commit ddns
-	logger -t ddns-defaults "已移除 ddns-scripts 的示例服务条目"
 fi
 
 exit 0

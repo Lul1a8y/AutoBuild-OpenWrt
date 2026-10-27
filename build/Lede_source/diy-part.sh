@@ -143,7 +143,24 @@ AGH_LUCI_MK="$(find package/kenzok8 -path '*/luci-app-adguardhome/Makefile' -pri
 if [ -n "$AGH_LUCI_MK" ] && [ -f "$AGH_LUCI_MK" ]; then
 	sed -i '/define Package\/luci-app-adguardhome\/postinst/,/^endef$/d' "$AGH_LUCI_MK"
 	sed -i 's/default y/default n/' "$AGH_LUCI_MK"
-	sed -i '/INCLUDE_binary:adguardhome/d' "$AGH_LUCI_MK"
+	# 2026-10-28: 原来按 /INCLUDE_binary:adguardhome/d 删整行, 而上游这一行是
+	#   LUCI_DEPENDS:=+ca-certs +curl +wget-ssl +PACKAGE_$(PKG_NAME)_INCLUDE_binary:adguardhome
+	# 删整行会把 ca-certs/curl/wget-ssl 一起丢掉 —— 当前只是被 target 默认包(curl)和
+	# luci-app-autoupdate 的 +wget-ssl 偶然兜住; 一旦关掉 OTA, ADH 的"更新核心"就下不动。
+	# 只摘掉那一个条件依赖, 其余保留。
+	sed -i 's|+PACKAGE_\$(PKG_NAME)_INCLUDE_binary:adguardhome||' "$AGH_LUCI_MK"
+	grep -q 'LUCI_DEPENDS:=.*ca-certs.*curl.*wget-ssl' "$AGH_LUCI_MK" || {
+		echo "!! AdGuardHome 的 LUCI_DEPENDS 没保住 ca-certs/curl/wget-ssl: $(grep -n 'LUCI_DEPENDS' "$AGH_LUCI_MK" | head -1)"
+		exit 1
+	}
+	if grep -q 'INCLUDE_binary:adguardhome' "$AGH_LUCI_MK"; then
+		echo "!! AdGuardHome 的 INCLUDE_binary 条件依赖没摘掉(缺省会连核心一起编)"
+		exit 1
+	fi
+	if ! grep -A4 'config PACKAGE_$(PKG_NAME)_INCLUDE_binary' "$AGH_LUCI_MK" | grep -q 'default n'; then
+		echo "!! AdGuardHome 的 INCLUDE_binary 默认值不是 n(核心会被无条件打包)"
+		exit 1
+	fi
 fi
 # 4. 修复 update_core.sh 架构映射：opkg 返回 "x86_64"，但脚本只匹配了 "x86"
 # 原脚本 detect_arch() 里 case "$Archt" 只有 x86) 没有 x86_64)
