@@ -19,6 +19,16 @@ TIME() {
       }
 }
 source /bin/openwrt_info
+# 2026-10-28: /bin/openwrt_info 只导出 Github(仓库地址), 并不存在 Github_Tags 这个变量 ——
+# 下面 wget 的地址一直是空串, 因此本脚本从来没有成功过, 每次都停在"获取固件版本信息失败"。
+# 按 AutoUpdate.sh:75 的同款规则补出来("${Github##*com/}" 剥成 owner/repo)。
+Apidz="${Github##*com/}"
+if [ "${Apidz#*/}" = "${Apidz}" ] || [ -z "${Apidz%%/*}" ] || [ -z "${Apidz##*/}" ]; then
+	TIME r "openwrt_info 里的 Github 地址无效(取不出 owner/repo): ${Github:-<空>}"
+	exit 1
+fi
+export Apidz
+export Github_Tags="https://api.github.com/repos/${Apidz}/releases/tags/AutoUpdate"
 [ ! -d ${Download_Path} ] && mkdir -p ${Download_Path}
 # 2026-10-20: 原为无条件 --no-check-certificate(跳过 TLS 校验) —— 本脚本拿到的版本索引随后用来
 # 决定"换成哪个固件", 明文降级等于把换机决策交给中间人。改为: 先严格 TLS, 失败再回退并显式告警
