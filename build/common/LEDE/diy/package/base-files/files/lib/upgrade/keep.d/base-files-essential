@@ -12,4 +12,10 @@
 /mnt/network
 /etc/docker/daemon.json
 /etc/docker/key.json
-/etc/config/AdGuardHome.yaml
+# 2026-10-27: 原来写的是 /etc/config/AdGuardHome.yaml —— 该路径在设备上并不存在, 等于没保留。
+# luci-app-adguardhome 的 conffiles 只有 /usr/share/AdGuardHome/links.txt 和 /etc/config/AdGuardHome,
+# 而运行配置默认落在 configpath=/etc/AdGuardHome.yaml; init 的 start_service 发现它为空就:
+#     [ ! -s "$configpath" ] && cp -f /usr/share/AdGuardHome/AdGuardHome_template.yaml "$configpath"
+# 所以此前每次 sysupgrade 之后, 用户填的上下游/过滤规则/访问限制都会被模板覆盖回默认值。
+# (workdir=/etc/AdGuardHome 里的 data/ 只是统计与过滤缓存, 会自动重建, 不放进保留清单以免备份变大)
+/etc/AdGuardHome.yaml

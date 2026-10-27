@@ -12,4 +12,5 @@
 /mnt/network
 /etc/docker/daemon.json
 /etc/docker/key.json
-/etc/config/AdGuardHome.yaml
+# 2026-10-27: 同 LEDE 分支 —— 实际运行配置是 /etc/AdGuardHome.yaml, 不是 /etc/config/ 下那个。
+/etc/AdGuardHome.yaml
