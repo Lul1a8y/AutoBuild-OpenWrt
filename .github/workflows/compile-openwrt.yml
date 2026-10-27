@@ -309,7 +309,13 @@ jobs:
         # 关掉 OTA 时 defconfig 会丢掉 =y —— 无条件断言会让合法开关值不可构建。改为
         # "源码在就必须被选中"。kmod-drm-i915 也列进来: 它一旦被 defconfig 丢掉, 下面 i915 段
         # 会整段跳过并只打 warning, 固件少了模块却 CI 绿色。
+        # 2026-10-28: 补上 passwall 的两个透明代理变体。它们是子选项(不是独立包), 一旦上游
+        # 改名/合并, defconfig 会把它们静默丢掉 —— 而 kmod-nft-socket/kmod-nft-tproxy 与
+        # kmod-ipt-nat 全靠这两个 select, 丢了就是"代理能连但流量不转发"或"53 劫持失效",
+        # 这种残废固件比构建失败更难查, 所以这里宁可红。
         ASSERT_PKGS="luci-app-adguardhome luci-app-openclash luci-app-mosdns luci-app-passwall"
+        ASSERT_PKGS="$ASSERT_PKGS luci-app-passwall_Nftables_Transparent_Proxy"
+        ASSERT_PKGS="$ASSERT_PKGS luci-app-passwall_Iptables_Transparent_Proxy"
         ASSERT_PKGS="$ASSERT_PKGS luci-app-ttyd mosdns sing-box chinadns-ng kmod-drm-i915"
         if [ -d feeds/luci/applications/luci-app-autoupdate ]; then
           ASSERT_PKGS="$ASSERT_PKGS luci-app-autoupdate"
