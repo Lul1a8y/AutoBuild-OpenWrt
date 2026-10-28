@@ -302,7 +302,7 @@ if grep -qE "$GZIP_DEL_RE" "$AU_BIN"; then
 fi
 if grep -qE "$GZIP_DEL_RE" "$AU_BIN"; then echo "!! 移除 gzip 的代码段没删掉(上游改写?), -u 升级会丢配置"; exit 1; fi
 echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置会丢) =="
- . # 2026-10-28: 包内脚本的 -u 分支(就是 LuCI 一键升级和 cron 走的那条)有三个问题,
+# 2026-10-28: 包内脚本的 -u 分支(就是 LuCI 一键升级和 cron 走的那条)有三个问题,
 #   之前只顺手删了它的 gzip 段, 这三处一直没管:
 #   1) 打包前 `mv /etc/config/luci /tmp/beifen_luci` → 备份 tar 里没有 /etc/config/luci,
 #      恢复后又立刻被 -f 顶替系统自动备份, 于是每次升级主题/语言/会话设置都回默认值;
@@ -340,6 +340,33 @@ if ! grep -q 'sort | tail -n 1' "$AU_BIN"; then
   exit 1
 fi
 echo "== 包内 AutoUpdate 改为按版本取最大, 不再依赖资产返回顺序 =="
+
+# 2026-10-28: 包内脚本的 -u/-k 只打印"云端版本低于本地", 但随后仍调用
+# Remote_download; cron 每周跑 -u 时, 如果发布被回滚/API 被篡改, 会自动降级。
+# 这里在 Remote_download 开头加版本守卫: 只有云端低于本地才跳过;
+# 云端等于/高于本地时行为不变(允许同版本重装, 正常升级照旧)。
+# 用 awk 插入, 避免 perl 替换串里的 $Select/${CLOUD_VERSION} 被 perl 插值吃掉。
+if ! grep -q 'CLOUD_VERSION.*-lt.*LOCAL_VERSION' "$AU_BIN"; then
+  grep -q '^Remote_download() {$' "$AU_BIN" || {
+    echo "!! 包内 AutoUpdate 缺少 Remote_download 锚点, 无法插入版本守卫"; exit 1
+  }
+  awk '!done && /^Remote_download\(\) \{$/ {
+    print
+    print "    if [ \"$Select\" = \"u\" ] || [ \"$Select\" = \"k\" ]; then"
+    print "        if [ \"${CLOUD_VERSION}\" -lt \"${LOCAL_VERSION}\" ]; then"
+    print "            TIME z \"云端版本低于本地, 跳过升级\"; exit 0"
+    print "        fi"
+    print "    fi"
+    print ""
+    done=1
+    next
+  }
+  { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+fi
+grep -q 'CLOUD_VERSION.*-lt.*LOCAL_VERSION' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 版本守卫未插入"; exit 1
+}
+echo "== 包内 AutoUpdate 已加 -u/-k 版本守卫(只阻止降级) =="
 
 
 # 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,

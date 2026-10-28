@@ -382,7 +382,18 @@ if ! wget -q --no-check-certificate --timeout=15 --tries=1 "${Github_Release}/${
 	exit 1
 fi
 EXPECT_SHA="$(awk '{print $1}' "${Download_Path}/${SideCar}")"
+EXPECT_NAME="$(awk '{print $2}' "${Download_Path}/${SideCar}")"
 ACTUAL_SHA="$(sha256sum "${Download_Path}/${Firmware}" | awk '{print $1}')"
+# 2026-10-28: 签名清单是 `sha256  filename`, 之前只比第一列。若只比哈希,
+# 中间人可以把旧固件 + 旧签名清单一起重放; 必须同时校验清单里的文件名,
+# 否则"当前 API 名字 + 旧签名固件"也能通过。兼容 ./ 前缀和 sha256sum -b 的 * 前缀。
+EXPECT_NAME="${EXPECT_NAME#\*}"
+EXPECT_NAME="${EXPECT_NAME##*/}"
+if [ -z "${EXPECT_NAME}" ] || [ "${EXPECT_NAME}" != "${Firmware}" ]; then
+	TIME r "签名清单文件名与当前固件不一致(清单: ${EXPECT_NAME:-空} / 当前: ${Firmware}),已中止!"
+	echo
+	exit 1
+fi
 if ! echo "${EXPECT_SHA}" | grep -qE '^[0-9a-fA-F]{64}$'; then
 	TIME r "校验清单格式异常,已中止!"
 	echo

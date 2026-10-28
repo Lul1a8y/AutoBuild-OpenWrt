@@ -109,6 +109,17 @@ jobs:
         echo "Modelfile=${{matrix.target}}" >> $GITHUB_ENV
         # 2026-10-09: 由 secrets 计算一次供 if 条件使用(REPO_TOKEN 已从全局 env 移除)
         echo "HAS_REPO_TOKEN=${{ secrets.REPO_TOKEN != '' }}" >> $GITHUB_ENV
+    - name: 检查签名密钥
+      env:
+        SIGN_KEY_B64: ${{ secrets.FIRMWARE_SIGN_KEY_B64 }}
+      run: |
+        # 2026-10-28: 未配置签名密钥时, 原来要等 5 小时编译完、到「云端更新1」才失败。
+        # 这里提前到构建开始, 几秒内失败并指向 README。
+        if [ "${REGULAR_UPDATE}" = "true" ] && [ -z "${SIGN_KEY_B64}" ]; then
+          echo "::error::REGULAR_UPDATE=true 但未配置 FIRMWARE_SIGN_KEY_B64"
+          echo "::error::生成方法见 README.md 的「固件签名密钥」；不要提交私钥"
+          exit 1
+        fi
     - name: 初始化
       run: |
         chmod -R +x "${GITHUB_WORKSPACE}/build/common"
@@ -282,7 +293,21 @@ jobs:
             echo "$d: $(git -C "$d" rev-parse HEAD 2>/dev/null)"
           done
         } > "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt"
+        # 2026-10-28: 在编译前把源码快照固定下来并上传 artifact。
+        # 这样即使编译阶段的 Makefile 被上游注入, 事后也能核对"当时到底用了哪些 commit";
+        # 不改变"每次跟上游最新"的行为, 只是把快照变成不可被构建阶段改写的副本。
+        cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt"
         cat "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt"
+
+    - name: 上传源码快照
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: build-source-${{ env.Compile_Date }}
+        path: |
+          BUILD_SOURCE.txt
+          SOURCE_LOCK.txt
+        if-no-files-found: error
+        retention-days: 30
 
     - name: 生成配置
       run: |
@@ -688,6 +713,7 @@ jobs:
         ls *combined*.img.gz >/dev/null 2>&1 || { echo "!! rename 后未找到 combined 镜像"; ls -l | head -20; exit 1; }
         [ "$(ls -1 | wc -l)" -ge 2 ] || { echo "!! 发布目录资产少于 2 个"; exit 1; }
         [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
+        [ -f "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" ] && cp "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" .
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "BOT=TRUE" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_ENV
@@ -730,7 +756,7 @@ jobs:
         echo "| 192.168.50.2 | root | password | 12306 |" >> update_log.txt
         echo "" >> update_log.txt
         echo "> OpenClash 控制面板密码不再写死在仓库: 构建时由 secret OPENCLASH_DASH_PASS 注入, 未配置则随机生成 — 可在路由器执行 \`uci get openclash.@config[0].dashboard_password\` 查看" >> update_log.txt
-        echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt" >> update_log.txt
+        echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt；编译前快照见 SOURCE_LOCK.txt" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
       # 2026-10-20: 同上, FIRMWARE 为空时 artifacts 通配会指向错误位置 → 补存在性判断
