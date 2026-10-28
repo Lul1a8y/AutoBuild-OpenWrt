@@ -242,7 +242,9 @@ jobs:
         # 2026-10-09: feeds 之后的修补统一在 post-feeds.sh(单一定义, 幂等); 未就位即中止, 不留静默缺口
         [ -f "${PATH1}/post-feeds.sh" ] || { echo "!! post-feeds.sh 未随 build/common/*.sh 就位"; exit 1; }
         source "${PATH1}/common.sh" && Diy_settings
-        [[ "${{ github.event.inputs.ssh }}" == 'ssh' ]] && echo "SSHYC=true" >> $GITHUB_ENV
+        # 2026-10-28: 原来这里读取 github.event.inputs.ssh, 但 workflow_dispatch 没有定义
+        # ssh 输入, 也没有对应的 SSH 步骤 —— 是死引用(actionlint 会报 property "ssh" 未定义)。
+        # 需要 SSH 调试时再单独加 inputs.ssh + tmate/ssh 步骤; 现在先删掉误导性代码。
         cd openwrt
         if [[ "${REPO_BRANCH}" == "master" ]]; then
           source "${PATH1}/common.sh" && Diy_lede
