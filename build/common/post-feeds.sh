@@ -302,6 +302,31 @@ if grep -qE "$GZIP_DEL_RE" "$AU_BIN"; then
 fi
 if grep -qE "$GZIP_DEL_RE" "$AU_BIN"; then echo "!! 移除 gzip 的代码段没删掉(上游改写?), -u 升级会丢配置"; exit 1; fi
 echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置会丢) =="
+ . # 2026-10-28: 包内脚本的 -u 分支(就是 LuCI 一键升级和 cron 走的那条)有三个问题,
+#   之前只顺手删了它的 gzip 段, 这三处一直没管:
+#   1) 打包前 `mv /etc/config/luci /tmp/beifen_luci` → 备份 tar 里没有 /etc/config/luci,
+#      恢复后又立刻被 -f 顶替系统自动备份, 于是每次升级主题/语言/会话设置都回默认值;
+#   2) 备份写到 /mnt, 而 /mnt 就在 overlay 上, 和被升级的系统同一块盘;
+#   3) 每次升级都往 crontab 追加 `check_network`, 那个脚本在镜像里根本不存在,
+#      留下只会每 10 分钟刷一条 sh: not found(post-feeds 删的是静态那行, 拦不住这里)。
+#   兜底的 -F -q 改成 -F: -q 只是静默, -n 才是不保留配置, 原写法语义含糊。
+if grep -q 'beifen_luci' "$AU_BIN"; then
+  perl -0pi -e 's{        # 清理配置文件\n        mv /etc/config/luci /tmp/beifen_luci\n        # 添加定时任务\n        sed -i .*?check_network.*?\n        echo .*?check_network.*?\n        # 重启 cron 服务\n        /etc/init.d/cron restart\n        # 备份系统\n        rm -rf /mnt/\*upback\.tar\.gz\n        sysupgrade -b /mnt/upback\.tar\.gz\n        mv /tmp/beifen_luci /etc/config/luci\n}{        # 2026-10-28: 备份必须原样包含 /etc/config/luci, 且不能写在 overlay 上的 /mnt\n        #   (细节见 post-feeds.sh 里同名注释); check_network 的定时任务也不再追加。\n        rm -f /tmp/upback.tar.gz\n        sysupgrade -b /tmp/upback.tar.gz\n}s' "$AU_BIN"
+  perl -0pi -e 's{if \[ -f "/mnt/upback\.tar\.gz" \]; then}{if [ -f "/tmp/upback.tar.gz" ]; then}; s{UPGRADE_COMMAND="sysupgrade -F -f /mnt/upback\.tar\.gz"}{UPGRADE_COMMAND="sysupgrade -F -f /tmp/upback.tar.gz"}; s{UPGRADE_COMMAND="sysupgrade -F -q"}{UPGRADE_COMMAND="sysupgrade -F"}' "$AU_BIN"
+fi
+if grep -q 'beifen_luci' "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 的 luci 搬移段没删掉(上游改写?), 升级会丢 LuCI 配置"
+  exit 1
+fi
+if grep -q "/mnt/upback" "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 的备份仍写在 /mnt(overlay 上)"
+  exit 1
+fi
+if grep -q 'usr/bin/check_network' "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 仍会往 crontab 追加 check_network"
+  exit 1
+fi
+echo "== 已修正包内 AutoUpdate 的 -u 备份路径/配置搬移/check_network 追加 =="
 
 # 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,
 # 但镜像里没有这个文件(设备实测 ls: No such file or directory), 升级后 cron 每 10 分钟
