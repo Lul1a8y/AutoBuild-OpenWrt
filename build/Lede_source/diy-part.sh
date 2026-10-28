@@ -428,7 +428,8 @@ git clone --depth 1 --single-branch -b master \
 rm -rf feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
-rm -rf /tmp/ft-luci
+# 2026-10-28: 不要在这里删 /tmp/ft-luci —— 下面的 i18n 块还要从它复制
+# po/zh-cn 或 po/zh_Hans/filetransfer.po; 删除动作移到 i18n 块之后。
 
 # ⚠️ feeds 索引在 diy-part 之前就已生成(见日志 "Create index file './feeds/luci.index'"),
 #    新拷进来的 luci-lib-fs 不在索引里 → filetransfer 依赖解析不到 →
@@ -501,6 +502,9 @@ BASE_PO="feeds/luci/modules/luci-base/po/zh_Hans/base.po"
 if [ -f "$BASE_PO" ] && ! grep -q '^msgid "FileTransfer"$' "$BASE_PO"; then
 	printf '\nmsgid "FileTransfer"\nmsgstr "文件传输"\n' >> "$BASE_PO"
 fi
+
+# i18n 块已用完 /tmp/ft-luci, 现在清理
+rm -rf /tmp/ft-luci
 
 # --- 添加 menu.d JSON（LuCI 23.05+ 菜单树依赖 menu.d，缺了菜单不显示）---
 mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d
