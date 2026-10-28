@@ -327,6 +327,20 @@ if grep -q 'usr/bin/check_network' "$AU_BIN"; then
   exit 1
 fi
 echo "== 已修正包内 AutoUpdate 的 -u 备份路径/配置搬移/check_network 追加 =="
+# 2026-10-28: 包内脚本挑云端固件是 `grep -E "$regex" "$tmpapi_version" | tail -n 1`,
+#   同样依赖 GitHub 按上传顺序返回资产。手工补传一个旧版本做回滚时, 它会被选中,
+#   设备拿旧版本比较 → 走 -lt 分支 → cron 无人值守时 read 读到空输入直接 exit 0,
+#   自动更新从此静默停摆且不报错。改成先把固件名抽出来再排序取最大
+#   (固件名等宽, 字典序即时间序); 不能直接对 JSON 原文行排序, 那样会打乱整行。
+if grep -q 'grep -E "$regex" "$tmpapi_version" | tail -n 1' "$AU_BIN"; then
+  sed -i 's#| tail -n 1)#| grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)#' "$AU_BIN"
+fi
+if ! grep -q 'sort | tail -n 1' "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 仍未按版本取最大(上游改写?), 可能选中手工补传的旧版本"
+  exit 1
+fi
+echo "== 包内 AutoUpdate 改为按版本取最大, 不再依赖资产返回顺序 =="
+
 
 # 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,
 # 但镜像里没有这个文件(设备实测 ls: No such file or directory), 升级后 cron 每 10 分钟
