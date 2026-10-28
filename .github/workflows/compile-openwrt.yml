@@ -317,6 +317,9 @@ jobs:
         ASSERT_PKGS="$ASSERT_PKGS luci-app-passwall_Nftables_Transparent_Proxy"
         ASSERT_PKGS="$ASSERT_PKGS luci-app-passwall_Iptables_Transparent_Proxy"
         ASSERT_PKGS="$ASSERT_PKGS luci-app-ttyd mosdns sing-box chinadns-ng kmod-drm-i915"
+        # wget-ssl: 升级/换源两条通道都靠它下载(实测 uclient-fetch 抓 GitHub release 超时),
+        # 它本身不是显式依赖, 被 defconfig 丢掉时只会表现为"下载失败", 所以一并断言。
+        ASSERT_PKGS="$ASSERT_PKGS wget-ssl"
         if [ -d feeds/luci/applications/luci-app-autoupdate ]; then
           ASSERT_PKGS="$ASSERT_PKGS luci-app-autoupdate"
         fi
