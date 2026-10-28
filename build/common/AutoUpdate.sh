@@ -457,15 +457,20 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	# 等于手动升级通道在某些 shell 下静默失败; 加 [ -f ] 守卫, 存在才 source。
 	[ -f /etc/deletefile ] && . /etc/deletefile
 	cp -Rf /etc/config/network /mnt/network
-	mv -f /etc/config/luci /etc/config/luci-
-	sysupgrade -b /mnt/back.tar.gz
-	[[ $? == 0 ]] && {
-		mv -f /etc/config/luci- /etc/config/luci
-		export Upgrade_Options="sysupgrade -f /mnt/back.tar.gz"
-	} || {
-		mv -f /etc/config/luci- /etc/config/luci
-		export Upgrade_Options="sysupgrade -q"
-	}
+	# 2026-10-28: 这里原本先 `mv /etc/config/luci /etc/config/luci-` 再 sysupgrade -b。
+	#   打包那一刻 luci 已经被改名, 备份里根本没有 /etc/config/luci, 只多出一个 luci- 野文件;
+	#   紧接着 -f 用这份残缺 tar 顶替 sysupgrade 自己生成的完整备份, 于是每升一次级,
+	#   主题/语言/会话设置都回到默认值。备份必须原样包含 /etc/config/luci。
+	#   备份文件也从 /mnt 挪到 /tmp: /mnt 就在 overlay 上, 和被升级的系统同一块盘, 掉电必一起丢;
+	#   sysupgrade 会把这份 tar 复制进新系统, 不依赖重启后它还在。
+	#   原来失败兜底写的是 sysupgrade -q, 注释还说是"不保留配置" —— -q 只是静默, -n 才不保留配置。
+	#   这里改成裸 sysupgrade: 备份都做不出来时, 让 sysupgrade 用自己的自动备份并如实报错,
+	#   而不是假装配置已经被保住了。
+	if sysupgrade -b /tmp/back.tar.gz; then
+		export Upgrade_Options="sysupgrade -f /tmp/back.tar.gz"
+	else
+		export Upgrade_Options="sysupgrade"
+	fi
 fi
 
 ${Upgrade_Options} ${Firmware}

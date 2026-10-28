@@ -292,10 +292,15 @@ fi
 # 命令内部就是 `tar c${TAR_V}zf`, 备份失败后 sysupgrade 会 `rm -f $conf_tar; exit 1`, 于是
 # `[ -f /mnt/upback.tar.gz ]` 为假 → 退化成 `sysupgrade -F -q`(不保留配置) → 升级完配置全丢。
 # 镜像解压走 get_image 的 `busybox zcat`(这个 applet 在, 实测不需要外部 gzip), 所以整段删除。
-if grep -q 'remove gzip' "$AU_BIN"; then
+GZIP_DEL_RE='(opkg +remove|apk +del(ete)?) +gzip'
+if grep -qE "$GZIP_DEL_RE" "$AU_BIN"; then
+	grep -q '^    # 移除 gzip 包$' "$AU_BIN" || {
+		echo "!! 上游 gzip 删除段还在, 但注释锚点 '# 移除 gzip 包' 不见了, 无法安全定位删除范围"
+		exit 1
+	}
   perl -0pi -e 's{    # 移除 gzip 包\n.*?\n    fi\n}{    # 2026-10-22: 这里原本会 opkg/apk 删除 gzip。但 busybox tar -z 需要外部 gzip 二进制,\n    #   而下面的 sysupgrade -b 正是 tar czf —— 删掉 gzip 会让备份失败、退化成不保留配置升级。\n    #   镜像解压走 busybox zcat, 不需要这个包, 所以整段去掉。\n}s' "$AU_BIN"
 fi
-if grep -q 'remove gzip' "$AU_BIN"; then echo "!! 移除 gzip 的代码段没删掉(上游改写?), -u 升级会丢配置"; exit 1; fi
+if grep -qE "$GZIP_DEL_RE" "$AU_BIN"; then echo "!! 移除 gzip 的代码段没删掉(上游改写?), -u 升级会丢配置"; exit 1; fi
 echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置会丢) =="
 
 # 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,
