@@ -449,54 +449,42 @@ else
 	exit 1
 fi
 
-# 删除旧版 po/zh-cn（LuCI 23.05+ 用 po/zh_Hans，避免冲突）
+# 2026-10-28: 不要再用 13 条手写 .po 覆盖上游完整翻译。
+# 上游 coolsnowwolf/luci 的 po/zh-cn/filetransfer.po 有 18 条, 包含
+# "Couldn't open file:" / "File name" / "Size" 等页面常用串; 之前删掉它
+# 只留 13 条, 结果很多文字仍是英文。
+# 这里把上游完整 po 复制成 zh_Hans(LuCI 23.05+ 的目录名, 生成包名仍是 zh-cn),
+# 再补上本仓库页面额外用到的几条 msgid。
+FT_PO_SRC="/tmp/ft-luci/applications/luci-app-filetransfer/po/zh-cn/filetransfer.po"
+FT_PO_DST="feeds/luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po"
+mkdir -p "$(dirname "$FT_PO_DST")"
+if [ -f "$FT_PO_SRC" ]; then
+	sed 's/^"Language: zh_CN\\n"$/"Language: zh_Hans\\n"/' "$FT_PO_SRC" > "$FT_PO_DST"
+else
+	# 上游 clone 失败时先保证文件存在; 后续 Makefile/依赖检查会报真正的错误。
+	printf 'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=UTF-8\\n"\n"Content-Transfer-Encoding: 8bit\\n"\n"Language: zh_Hans\\n"\n' > "$FT_PO_DST"
+fi
+
+append_msg() {
+	grep -qF "msgid \"$1\"" "$FT_PO_DST" || \
+		printf '\nmsgid "%s"\nmsgstr "%s"\n' "$1" "$2" >> "$FT_PO_DST"
+}
+append_msg "Delete" "删除"
+append_msg "Install ipk file ?" "安装 ipk 文件？"
+append_msg "Submit" "提交"
+append_msg "Upload and Install ipk File" "上传并安装 ipk 文件"
+append_msg "Upload File" "上传文件"
+append_msg "Upload log" "上传日志"
+append_msg "Uploaded Files" "已上传的文件"
+
+# 旧版 po/zh-cn 与 po/zh_Hans 会生成同名 i18n 包, 只保留 zh_Hans
 rm -rf feeds/luci/applications/luci-app-filetransfer/po/zh-cn
 
-# 添加 zh_Hans 翻译（旧 po 用 zh-cn，新 luci 用 zh_Hans）
-mkdir -p feeds/luci/applications/luci-app-filetransfer/po/zh_Hans
-cat > feeds/luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po << 'POEOF'
-msgid ""
-msgstr ""
-"Content-Type: text/plain; charset=UTF-8\n"
-"Content-Transfer-Encoding: 8bit\n"
-"Language: zh_Hans\n"
-
-msgid "Choose local file:"
-msgstr "选择本地文件："
-
-msgid "Delete"
-msgstr "删除"
-
-msgid "Download"
-msgstr "下载"
-
-msgid "FileTransfer"
-msgstr "文件传输"
-
-msgid "Install"
-msgstr "安装"
-
-msgid "Install ipk file ?"
-msgstr "安装 ipk 文件？"
-
-msgid "Submit"
-msgstr "提交"
-
-msgid "Upload"
-msgstr "上传"
-
-msgid "Upload and Install ipk File"
-msgstr "上传并安装 ipk 文件"
-
-msgid "Upload File"
-msgstr "上传文件"
-
-msgid "Upload log"
-msgstr "上传日志"
-
-msgid "Uploaded Files"
-msgstr "已上传的文件"
-POEOF
+# menu.d 的 title 走 luci-base 域, 补一条确保顶部菜单也是“文件传输”
+BASE_PO="feeds/luci/modules/luci-base/po/zh_Hans/base.po"
+if [ -f "$BASE_PO" ] && ! grep -q '^msgid "FileTransfer"$' "$BASE_PO"; then
+	printf '\nmsgid "FileTransfer"\nmsgstr "文件传输"\n' >> "$BASE_PO"
+fi
 
 # --- 添加 menu.d JSON（LuCI 23.05+ 菜单树依赖 menu.d，缺了菜单不显示）---
 mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d
