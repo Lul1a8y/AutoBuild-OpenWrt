@@ -136,8 +136,9 @@ jobs:
           echo "CODE=Mortal" >> $GITHUB_ENV
           echo "OpenWrt_name=18.06" >> $GITHUB_ENV
         fi
-        # 2026-10-09: 固件版本号唯一来源(上游 lede bump 只改这一处; post-feeds.sh / 发布信息 / 产物自检共用)
-        echo "FIRMWARE_VER=R26.05.20" >> $GITHUB_ENV
+        # 2026-10-28: 版本号按构建日期生成 RYY.MM.DD(原来固定 R26.05.20, 已过期)。
+        # 同一天多次构建仍由 Compile_Date 区分; post-feeds / 发布信息 / 产物自检共用此变量。
+        echo "FIRMWARE_VER=R$(date +%y.%m.%d)" >> $GITHUB_ENV
         # 2026-10-20: 删除 NETIP —— 全仓库无任何地方读取它(连未启用的 Lienol/Mortal 分支都不读)
         echo "DELETE=package/base-files/files/etc/deletefile" >> $GITHUB_ENV
 
@@ -354,6 +355,15 @@ jobs:
             grep -n "PACKAGE_${p}\\b" tmp/.packageinfo | head -3
             exit 1
           }
+        done
+        # 2026-10-28: 可选/桌面组件只做软告警, 不阻断构建。上游改名/删包时
+        # 至少日志里能看到, 避免"README 说有、固件里没有"却完全无声。
+        # 核心包仍由上面的 ASSERT_PKGS 硬断言。
+        for p in luci-app-openlist openlist luci-app-diskman luci-app-partexp \
+                 luci-app-zerotier luci-app-netdata luci-app-filetransfer \
+                 luci-theme-argon luci-app-ssr-plus; do
+          grep -q "^CONFIG_PACKAGE_${p}=y$" .config || \
+            echo "::warning::${p} 未出现在最终 .config(=y), 可能被上游改名/删除或被 defconfig 丢弃"
         done
         echo "== 关键包收录断言通过 =="
         ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/config.txt

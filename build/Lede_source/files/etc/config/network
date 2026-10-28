@@ -14,18 +14,14 @@ config interface 'lan'
 	option ip6assign '64'
 	option device 'br-lan'
 
+# 2026-10-28: PPPoE 双栈由 wan 的 ipv6 auto 在 pppoe-wan 上生成 wan_6;
+# 不再单开 wan6 on eth1(那会绕过 PPPoE, 且与 ipv6 auto 重复)。
 config interface 'wan'
 	option _orig_ifname 'eth1'
 	option _orig_bridge 'false'
 	option proto 'pppoe'
 	option ipv6 'auto'
 	option keepalive '0'
-	option device 'eth1'
-
-config interface 'wan6'
-	option proto 'dhcpv6'
-	option reqaddress 'try'
-	option reqprefix 'auto'
 	option device 'eth1'
 
 config device

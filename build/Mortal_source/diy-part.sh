@@ -5,7 +5,9 @@
 
 # sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci/Makefile           # 选择argon为默认主题
 
-sed -i '/CYXluq4wUazHjmCDBCqXF/d' $ZZZ                                                              # 设置密码为空
+# 2026-10-28: 原来这里删除 root 密码哈希(空密码), 只保留上游默认密码;
+# 不要在这里清空 /etc/shadow, 否则启用该源会产出无 root 密码固件。
+# sed -i '/CYXluq4wUazHjmCDBCqXF/d' $ZZZ
 
 sed -i "s/'OpenWrt'/'N1'/g" package/base-files/files/bin/config_generate                            # 设置主机名
 

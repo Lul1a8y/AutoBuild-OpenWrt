@@ -1,0 +1,23 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: 准备结束
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: 安装 shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - name: 运行 lint
+        run: ./scripts/lint.sh

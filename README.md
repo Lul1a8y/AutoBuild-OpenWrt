@@ -31,7 +31,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 - **OpenClash 控制面板密码不再写死在仓库里**：构建时注入。仓库 secret `OPENCLASH_DASH_PASS` 优先，未配置则每次构建随机生成。
   在路由器上查看方式：`uci get openclash.@config[0].dashboard_password`
 - 每次构建的 release 里附带 **`BUILD_SOURCE.txt`** 和 **`SOURCE_LOCK.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、`.config` 的 sha256；`SOURCE_LOCK.txt` 是编译前的快照，便于事后核对和回滚。
-- 固件版本号在 `.github/workflows/compile-openwrt.yml` 的 `FIRMWARE_VER`（单一来源），上游 bump 时只改这一处。
+- 固件版本号由 `.github/workflows/compile-openwrt.yml` 的 `FIRMWARE_VER` 按构建日期生成（`RYY.MM.DD`，单一来源）；如需固定版本，只改这一处。
 - release 里保留 `*sha256sums*` / `*manifest*` / `*buildinfo*`，可用于校验与包清单核对。
 
 **仓库 secret**
@@ -75,7 +75,7 @@ ssh -p 12306 root@192.168.50.2 sh /tmp/router-acceptance.sh
 **固件特性**
 
 - 源码：coolsnowwolf/lede master 分支
-- 内核：6.18 LTS（测试分支 kernel-6.18-test 验证中；main 仍为 6.6 LTS）
+- 内核：6.18 LTS（main 已 pin 6.18；kernel-6.18-test 为验证分支）
 - LuCI：23.05
 - 插件源：kenzok8/openwrt-packages + kenzok8/small + vernesong/OpenClash + fw876/helloworld
 - GFW 菜单归类：OpenClash / PassWall / SSR-Plus / ZeroTier / IPSec
@@ -85,6 +85,8 @@ ssh -p 12306 root@192.168.50.2 sh /tmp/router-acceptance.sh
 **主要插件**
 
 OpenClash / PassWall / SSR-Plus / AdGuard Home / OpenList(文件管理, 原 AList) / ZeroTier / ttyd / netdata / Diskman
+
+> AdGuard Home 默认只装 `luci-app-adguardhome` 壳，**不打包核心**。刷完固件后在 LuCI 页面点“更新核心”下载，或手动放入 `/usr/bin/AdGuardHome`；`/etc/AdGuardHome.yaml` 和已下载的核心会被 `keep.d` 保留，升级后还原设置即可。
 
 固件页面 Firmware page
 

@@ -162,14 +162,9 @@ if [ -n "$AGH_LUCI_MK" ] && [ -f "$AGH_LUCI_MK" ]; then
 		exit 1
 	fi
 fi
-# 4. 修复 update_core.sh 架构映射：opkg 返回 "x86_64"，但脚本只匹配了 "x86"
-# 原脚本 detect_arch() 里 case "$Archt" 只有 x86) 没有 x86_64)
-# sed: 在 x86) 行前面插入 x86_64) Arch="amd64" ;;
-AGH_UPDATE="$(find package/kenzok8 -path '*/AdGuardHome/update_core.sh' -print -quit 2>/dev/null)"
-if [ -n "$AGH_UPDATE" ] && [ -f "$AGH_UPDATE" ]; then
-	# 把 detect_arch() 里的 x86) 改成 x86_64|x86) ，同时匹配两种架构名
-	sed -E -i 's/^([[:space:]]*)x86\)$/\1x86_64|x86)/' "$AGH_UPDATE"
-fi
+# 4. 2026-10-28: 删除失效的 update_core.sh 架构 sed。
+# 上游 detect_arch() 现在已包含 x86_64|x86-64|amd64, 原来的 ^x86)$ 锚点匹配不到;
+# 留着只会让人误以为补丁生效, 实际是死代码。
 
 # ===== MosDNS v5 依赖保障 =====
 # kenzok8/small 的 luci-app-mosdns 现为 v1.7.12（2026-09 实测），依赖：
@@ -428,6 +423,9 @@ sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/nul
 # 不用 sparse-checkout（CI 环境经常失败），clone depth 1 后直接 cp
 git clone --depth 1 --single-branch -b master \
 	https://github.com/coolsnowwolf/luci.git /tmp/ft-luci
+# 2026-10-28: 先删除目标再拷贝。若上游 feed 以后重新加入同名包,
+# `cp -r src dest/` 会嵌套成 dest/src/, 导致实际编译的是旧版。
+rm -rf feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
 rm -rf /tmp/ft-luci

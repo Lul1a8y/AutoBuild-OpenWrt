@@ -186,6 +186,64 @@ df -h /overlay /tmp 2>/dev/null | sed 's/^/  /'
 blk="$(lsblk 2>/dev/null | head -5)"
 [ -n "$blk" ] && say "$blk" || warn "无 lsblk(不影响路由功能)"
 
+# ---------- 11. 配置一致性 / 暴露面 ----------
+head2 "11. 配置一致性 / 暴露面"
+if uci -q show firewall 2>/dev/null | grep -q "path='/etc/firewall.user'"; then
+  ok "firewall.user 的 fw4 include 存在"
+else
+  warn "firewall.user 的 fw4 include 不存在(新刷机 DNS 劫持不会生效)"
+fi
+if iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- '--dport 53.*5553'; then
+  ok "LAN 53→5553 劫持规则存在"
+else
+  warn "未见 53→5553 劫持规则"
+fi
+ADH_REDIRECT="$(uci -q get AdGuardHome.AdGuardHome.redirect 2>/dev/null)"
+say "  AdGuardHome.redirect=${ADH_REDIRECT:-未配置}"
+for p in 12306 7681 19999; do
+  if (netstat -ln 2>/dev/null || ss -ln 2>/dev/null) | grep -q ":$p "; then
+    say "  [INFO] 端口 $p 在监听(应仅 LAN 可达)"
+  fi
+done
+if grep -q 'check_signature' /etc/opkg.conf 2>/dev/null; then
+  ok "opkg check_signature 已启用"
+else
+  warn "opkg check_signature 未启用"
+fi
+say "  wan.ipv6=$(uci -q get network.wan.ipv6 2>/dev/null || echo 未设置)  wan6.device=$(uci -q get network.wan6.device 2>/dev/null || echo 未设置)"
+
+# ---------- 11. 暴露面/配置一致性 ----------
+head2 "11. 暴露面与配置一致性"
+if uci -q show firewall 2>/dev/null | grep -q "path='/etc/firewall.user'"; then
+  ok "firewall.user include 存在"
+else
+  warn "firewall.user include 不存在（新刷机默认不会劫持 53→AGH）"
+fi
+if iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- '--dport 53.*5553'; then
+  ok "53→5553 劫持规则存在"
+else
+  warn "未见 53→5553 劫持规则"
+fi
+AGH_MODE="$(uci -q get AdGuardHome.AdGuardHome.redirect 2>/dev/null)"
+say "  AdGuardHome redirect: ${AGH_MODE:-未配置}"
+for p in 12306 7681 19999; do
+  if (netstat -ln 2>/dev/null || ss -ln 2>/dev/null) | grep -q ":$p "; then
+    say "  [INFO] 端口 $p 在监听（管理面，仅应 LAN 可达）"
+  fi
+done
+if grep -q 'check_signature' /etc/opkg.conf 2>/dev/null; then
+  ok "opkg check_signature 已启用"
+else
+  warn "opkg check_signature 未启用（HTTPS 源仍缺包签名）"
+fi
+WANPROTO="$(uci -q get network.wan.proto 2>/dev/null)"
+WAN6PROTO="$(uci -q get network.wan6.proto 2>/dev/null)"
+WAN6DEV="$(uci -q get network.wan6.device 2>/dev/null)"
+say "  WAN proto: ${WANPROTO:-?}; wan6: ${WAN6PROTO:-未配置} dev=${WAN6DEV:-无}"
+if [ "$WANPROTO" = "pppoe" ] && [ -n "$WAN6DEV" ] && [ "$WAN6DEV" != "@wan" ]; then
+  warn "wan proto=pppoe 但 wan6.device=$WAN6DEV（建议 @wan 或删除 wan6）"
+fi
+
 # ---------- 摘要 ----------
 head2 "摘要"
 say "  FAIL=$FAILN  WARN=$WARNN"
