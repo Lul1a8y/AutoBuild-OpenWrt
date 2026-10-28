@@ -450,20 +450,26 @@ else
 fi
 
 # 2026-10-28: 不要再用 13 条手写 .po 覆盖上游完整翻译。
-# 上游 coolsnowwolf/luci 的 po/zh-cn/filetransfer.po 有 18 条, 包含
+# 上游 coolsnowwolf/luci 的 po/zh-cn 或 po/zh_Hans 里是完整 18 条, 包含
 # "Couldn't open file:" / "File name" / "Size" 等页面常用串; 之前删掉它
-# 只留 13 条, 结果很多文字仍是英文。
-# 这里把上游完整 po 复制成 zh_Hans(LuCI 23.05+ 的目录名, 生成包名仍是 zh-cn),
-# 再补上本仓库页面额外用到的几条 msgid。
-FT_PO_SRC="/tmp/ft-luci/applications/luci-app-filetransfer/po/zh-cn/filetransfer.po"
+# 只留手写条目, 结果很多文字仍是英文。
+# 注意: 上游 master 新目录是 po/zh_Hans, 旧目录是 po/zh-cn, 两个都要探测;
+# 之前只找 zh-cn, 找不到就 fallback 成 header+7 条, 结果 .lmo 只有 7 条。
+FT_PO_SRC=""
+for cand in \
+	"/tmp/ft-luci/applications/luci-app-filetransfer/po/zh-cn/filetransfer.po" \
+	"/tmp/ft-luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po"; do
+	[ -f "$cand" ] && { FT_PO_SRC="$cand"; break; }
+done
+[ -n "$FT_PO_SRC" ] || {
+	echo "!! 找不到 filetransfer 的完整 po(zh-cn/zh_Hans 都不存在), 拒绝只发 7 条残缺翻译" >&2
+	exit 1
+}
 FT_PO_DST="feeds/luci/applications/luci-app-filetransfer/po/zh_Hans/filetransfer.po"
 mkdir -p "$(dirname "$FT_PO_DST")"
-if [ -f "$FT_PO_SRC" ]; then
-	sed 's/^"Language: zh_CN\\n"$/"Language: zh_Hans\\n"/' "$FT_PO_SRC" > "$FT_PO_DST"
-else
-	# 上游 clone 失败时先保证文件存在; 后续 Makefile/依赖检查会报真正的错误。
-	printf 'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=UTF-8\\n"\n"Content-Transfer-Encoding: 8bit\\n"\n"Language: zh_Hans\\n"\n' > "$FT_PO_DST"
-fi
+sed 's/^"Language: zh_CN\\n"$/"Language: zh_Hans\\n"/' "$FT_PO_SRC" > "$FT_PO_DST"
+# 旧 header 可能是 Language: zh_CN; 统一成 zh_Hans(文件名/包名仍是 zh-cn)
+sed -i 's/^"Language: zh_CN\\n"$/"Language: zh_Hans\\n"/' "$FT_PO_DST"
 
 append_msg() {
 	grep -qF "msgid \"$1\"" "$FT_PO_DST" || \
@@ -476,6 +482,16 @@ append_msg "Upload and Install ipk File" "上传并安装 ipk 文件"
 append_msg "Upload File" "上传文件"
 append_msg "Upload log" "上传日志"
 append_msg "Uploaded Files" "已上传的文件"
+
+# 防回归: 完整 po 至少 10 条, 且必须有 FileTransfer; 否则说明又 fallback 了。
+[ "$(grep -c '^msgid ' "$FT_PO_DST")" -ge 10 ] || {
+	echo "!! filetransfer 翻译只有 $(grep -c '^msgid ' "$FT_PO_DST") 条, 疑似 fallback" >&2
+	exit 1
+}
+grep -q '^msgid "FileTransfer"$' "$FT_PO_DST" || {
+	echo "!! filetransfer 翻译缺 FileTransfer 条目" >&2
+	exit 1
+}
 
 # 旧版 po/zh-cn 与 po/zh_Hans 会生成同名 i18n 包, 只保留 zh_Hans
 rm -rf feeds/luci/applications/luci-app-filetransfer/po/zh-cn
@@ -491,7 +507,7 @@ mkdir -p feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.
 cat > feeds/luci/applications/luci-app-filetransfer/root/usr/share/luci/menu.d/luci-app-filetransfer.json << 'MDEOF'
 {
 	"admin/system/filetransfer": {
-		"title": "FileTransfer",
+		"title": "文件传输",
 		"order": 89,
 		"action": {
 			"type": "view",
