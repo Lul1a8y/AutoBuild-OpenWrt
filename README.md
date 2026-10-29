@@ -14,6 +14,8 @@
 - 执行 **`bash /bin/AutoUpdate.sh -n`** 不保留配置更新
 - Execute bash /bin/AutoUpdate.sh -n Do not keep configuration updates
 
+> 默认命令会保留 `/etc/config`（LAN、PPPoE、ADH 等）；`-n` 不保留，适合全新安装或配置已损坏时。
+
 **注意：LuCI 23.05 与旧版 18.06 不兼容，不能保留配置升级，建议全新安装后重新设置**
 
 Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on upgrade, recommended to reinstall and reconfigure

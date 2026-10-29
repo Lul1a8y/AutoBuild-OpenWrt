@@ -766,15 +766,19 @@ jobs:
         echo "" >> update_log.txt
         echo "- x86 固件版本：**${FIRMWARE_VER}** 内核版本：**${KERNEL_FULL:-${KERNEL_VER}}**" >> update_log.txt
         echo "- 1.软件同步到固件编译当天 OpenClash 更新至 v${OPENCLASH_VER:-latest}" >> update_log.txt
-        echo "- 2.此版本的 LuCI 为 23.05 与之前的 18.06 不兼容，不能留配置升级，建议重装重新设置" >> update_log.txt
+        echo "- 2. 从 18.06 旧版首次升级建议不保留配置；之后同版本链升级可用默认命令保留配置" >> update_log.txt
         echo "- **PVE虚拟** 平台 下载 **combined-efi.img** 镜像 然后在PVE下用命令 `qm importdisk 虚拟机编号 /var/lib/vz/template/iso/镜像文件.img local openwrt` 进行转换即可" >> update_log.txt
         echo "" >> update_log.txt
         echo "**x86 固件更新 方式：**" >> update_log.txt
         echo "" >> update_log.txt
         echo "1. 在**OP后台 系统--更新固件 点击 手动更新** 稍等几分钟 路由重启即可" >> update_log.txt
         echo "2. **命令行** 或 **SSH 链接** OP **执行以下命令** 完成固件更新" >> update_log.txt
-        echo "- 执行 **`bash /bin/AutoUpdate.sh`** 保留配置更新" >> update_log.txt
-        echo "- 执行 **`bash /bin/AutoUpdate.sh -n`** 不保留配置更新" >> update_log.txt
+        echo '- 执行 **`bash /bin/AutoUpdate.sh`** 保留配置更新（推荐）' >> update_log.txt
+        echo '  Execute `bash /bin/AutoUpdate.sh` to update while keeping the current configuration.' >> update_log.txt
+        echo '- 执行 **`bash /bin/AutoUpdate.sh -n`** 不保留配置更新（会不保留配置）' >> update_log.txt
+        echo '  Execute `bash /bin/AutoUpdate.sh -n` to update without keeping the current configuration.' >> update_log.txt
+        echo '' >> update_log.txt
+        echo '> 默认命令会保留 `/etc/config`（LAN、PPPoE、ADH 等）；`-n` 不保留，适合全新安装或配置已损坏时。' >> update_log.txt
         echo "" >> update_log.txt
         echo "**注意：升级不会保留原有自己安装的 app ，还需升级后自行按需安装**" >> update_log.txt
         echo "" >> update_log.txt
@@ -785,7 +789,7 @@ jobs:
         echo "| 192.168.50.2 | root | password | 12306 |" >> update_log.txt
         echo "" >> update_log.txt
         echo "> OpenClash 控制面板密码不再写死在仓库: 构建时由 secret OPENCLASH_DASH_PASS 注入, 未配置则随机生成 — 可在路由器执行 \`uci get openclash.@config[0].dashboard_password\` 查看" >> update_log.txt
-        echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt；编译前快照见 SOURCE_LOCK.txt" >> update_log.txt
+        echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt；最终配置快照见 SOURCE_LOCK.txt" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
       # 2026-10-20: 同上, FIRMWARE 为空时 artifacts 通配会指向错误位置 → 补存在性判断
