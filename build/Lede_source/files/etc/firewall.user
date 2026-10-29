@@ -31,18 +31,30 @@ redirect_dns() {
 	done
 }
 
-# IPv4
-redirect_dns iptables
+# 2026-10-30: 只有 AdGuardHome 核心存在且服务已启用时才劫持 53 -> 5553。
+# 仓库默认只编 LuCI 壳子、不编 AGH 核心; 无条件劫持会让没有核心的机器 DNS 全断。
+agh_available() {
+	{ [ -x /usr/bin/AdGuardHome ] || [ -x /etc/AdGuardHome/AdGuardHome ]; } || return 1
+	[ -x /etc/init.d/AdGuardHome ] || return 1
+	/etc/init.d/AdGuardHome enabled >/dev/null 2>&1
+}
 
-# IPv6：先确认 ip6tables 和 nat 表可用，避免 IPv6 关闭时刷错误日志
-if command -v ip6tables >/dev/null 2>&1; then
-	[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
-	if ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1; then
-		redirect_dns ip6tables
-	else
-		# 2026-10-29: 缺 ip6table_nat 时不能静默跳过, 否则 v6 客户端会绕过 ADH。
-		logger -t firewall.user "IPv6 DNS redirect skipped: ip6tables nat table unavailable" 2>/dev/null || true
+if agh_available; then
+	# IPv4
+	redirect_dns iptables
+
+	# IPv6：先确认 ip6tables 和 nat 表可用，避免 IPv6 关闭时刷错误日志
+	if command -v ip6tables >/dev/null 2>&1; then
+		[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
+		if ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1; then
+			redirect_dns ip6tables
+		else
+			# 2026-10-29: 缺 ip6table_nat 时不能静默跳过, 否则 v6 客户端会绕过 ADH。
+			logger -t firewall.user "IPv6 DNS redirect skipped: ip6tables nat table unavailable" 2>/dev/null || true
+		fi
 	fi
+else
+	logger -t firewall.user "AdGuardHome core missing or service disabled; skip DNS redirect to 5553" 2>/dev/null || true
 fi
 
 unset _ipt _p

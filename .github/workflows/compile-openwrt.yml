@@ -230,6 +230,14 @@ jobs:
           git fetch --depth 1 origin "$REPO_COMMIT" || { echo "!! 主源码固定 commit 拉取失败: ${REPO_COMMIT}"; exit 1; }
           git checkout --detach "$REPO_COMMIT" || { echo "!! 主源码固定 commit 切换失败"; exit 1; }
         fi
+        # 2026-10-30: 使用仓库里的 pinned feeds.conf, 把 feeds/* 也钉到固定 commit。
+        if [ -f "${GITHUB_WORKSPACE}/build/${{matrix.target}}/feeds.conf" ]; then
+          cp -f "${GITHUB_WORKSPACE}/build/${{matrix.target}}/feeds.conf" feeds.conf
+          echo "== 使用 pinned feeds.conf =="
+          grep -E '^src-git' feeds.conf
+        else
+          echo "::warning::未找到 build/${{matrix.target}}/feeds.conf, feeds 仍跟随上游分支"
+        fi
         # 2026-10-17: 不再 > /dev/null 2>&1 吞掉输出 —— 原先网络/源失败在这里静默, 直到很久以后
         # 才以别的形式炸出来。这一处 update 是必需的: 下面「加载设置」的 diy-part.sh 要对 feeds/luci 打补丁。
         ./scripts/feeds update -a
@@ -246,7 +254,8 @@ jobs:
         echo "Compile_Date=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
         # 2026-10-30: date/date1 也改为编译开始时生成, 与 Compile_Date、固件名保持同一时间基准;
         # 原先在编译结束后生成, normal release tag 会比固件名时间戳晚数小时。
-        echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
+        # date 统一用 12 位(与固件名一致), 不再和 14 位格式并存。
+        echo "date=${Compile_Date}" >> $GITHUB_ENV
         echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
         OC_CFG="${GITHUB_WORKSPACE}/build/${{matrix.target}}/files/etc/config/openclash"
         if [ -f "$OC_CFG" ]; then
@@ -481,7 +490,7 @@ jobs:
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target)) }}
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), format('build/{0}/feeds.conf', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target)) }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-openwrt-
 
@@ -509,7 +518,7 @@ jobs:
             {
               cat "${SRC_DIR}/.config"
               cat "${SRC_DIR}/settings.ini"
-              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" -type f -print0 2>/dev/null \
+              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" "${SRC_DIR}/feeds.conf" -type f -print0 2>/dev/null \
                 | sort -z | xargs -0 sha256sum
             } | sha256sum | awk '{print $1}'
           )"
@@ -838,11 +847,15 @@ jobs:
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
       # 2026-10-20: 同上, FIRMWARE 为空时 artifacts 通配会指向错误位置 → 补存在性判断
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true' && env.FIRMWARE != ''
+      # 2026-10-30: 只有 main 能创建普通固件 release; 测试分支也会产出 release,
+      # 且 target_commitish 默认 main, tag 会落在 main HEAD, 用户可能误当正式版。
+      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true' && env.FIRMWARE != '' && github.ref == 'refs/heads/main'
       uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
       with:
         name: ${{ env.CODE }}-${{ env.TARGET_PROFILE }}
         tag: ${{ env.date }}
+        # 2026-10-30: tag 必须指向本次构建的 commit, 不能默认落到 main HEAD。
+        commit: ${{ github.sha }}
         token: ${{ secrets.REPO_TOKEN }}
         bodyFile: "update_log.txt"
         artifacts: "${{ env.FIRMWARE }}/*"
@@ -1081,32 +1094,6 @@ jobs:
         overwrite: true
         file_glob: true
 
-    - name: 云端更新3
-      run: |
-        mkdir -p Github_Tags
-        cd Github_Tags
-        # 2026-10-09: 先按严格 TLS 取, 失败才回退 --no-check-certificate 并显式告警(不再默认跳过证书校验)
-        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags; then
-          echo "::warning::GitHub API 严格 TLS 拉取失败, 回退 --no-check-certificate 重试"
-          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
-        fi
-        [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
-        # 2026-10-22: 设备端 /usr/bin/AutoUpdate(luci-app-autoupdate 包内) 固定读
-        # <release>/zzz_api, 而本工作流一直只上传 Github_Tags —— 名字对不上,
-        # 于是"检查更新/一键升级"必然报 获取API数据失败。同一份 JSON 两个名字各传一份。
-        cp -f Github_Tags zzz_api
-        grep -q '"assets"' zzz_api || { echo "!! zzz_api 内容不是 release JSON"; exit 1; }
-
-    - name: 云端更新4
-      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
-      with:
-        repo_token: ${{ secrets.REPO_TOKEN }}
-        file: Github_Tags/*
-        # 2026-10-21 已合并回 main: 同上, 写生产通道
-        tag: AutoUpdate
-        overwrite: true
-        file_glob: true
-
     - name: 清理 AutoUpdate 旧固件
       # 2026-10-29: AutoUpdate 是覆盖式 tag, 资产只增不减; 当前 48 个镜像约 11GB,
       # 按一天多次构建会撞 GitHub 单 release 1000 资产上限。只保留最新 30 个
@@ -1132,3 +1119,30 @@ jobs:
                 || echo "::warning::删除旧资产失败: ${asset_name}"
             done
           done
+
+
+    - name: 云端更新3
+      run: |
+        mkdir -p Github_Tags
+        cd Github_Tags
+        # 2026-10-09: 先按严格 TLS 取, 失败才回退 --no-check-certificate 并显式告警(不再默认跳过证书校验)
+        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags; then
+          echo "::warning::GitHub API 严格 TLS 拉取失败, 回退 --no-check-certificate 重试"
+          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
+        fi
+        [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
+        # 2026-10-22: 设备端 /usr/bin/AutoUpdate(luci-app-autoupdate 包内) 固定读
+        # <release>/zzz_api, 而本工作流一直只上传 Github_Tags —— 名字对不上,
+        # 于是"检查更新/一键升级"必然报 获取API数据失败。同一份 JSON 两个名字各传一份。
+        cp -f Github_Tags zzz_api
+        grep -q '"assets"' zzz_api || { echo "!! zzz_api 内容不是 release JSON"; exit 1; }
+
+    - name: 云端更新4
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+      with:
+        repo_token: ${{ secrets.REPO_TOKEN }}
+        file: Github_Tags/*
+        # 2026-10-21 已合并回 main: 同上, 写生产通道
+        tag: AutoUpdate
+        overwrite: true
+        file_glob: true
