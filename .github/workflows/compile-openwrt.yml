@@ -37,6 +37,8 @@ jobs:
     outputs:
       regular_update: ${{ steps.publishmeta.outputs.regular_update }}
       has_repo_token: ${{ steps.publishmeta.outputs.has_repo_token }}
+      firmware_date: ${{ steps.organizer.outputs.firmware_date }}
+      ota_enabled: ${{ steps.organizer.outputs.ota_enabled }}
 
     name: 编译 "${{matrix.target}}"
     strategy:
@@ -60,7 +62,7 @@ jobs:
         # false(不报错, 只是通知/上传/发布被跳过), 排查代价极高。这里对已知开关做字面校验,
         # 写错即中止; 与现有 true/false 用法完全等价, 不改变现有行为。
         BAD_SWITCH=0
-        for SW in SSH_ACTIONS UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE BY_INFORMATION AUTOMATIC_AMLOGIC; do
+        for SW in UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE BY_INFORMATION; do
           VAL="${!SW-}"
           case "$VAL" in
             true|false|"") ;;
@@ -97,9 +99,9 @@ jobs:
         [ "$BAD_INI" = "0" ] || { echo "!! settings.ini 值格式非法, 中止"; exit 1; }
         echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
         echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
+        echo "REPO_COMMIT=${REPO_COMMIT:-}" >> $GITHUB_ENV
         echo "CONFIG_FILE=${CONFIG_FILE}" >> $GITHUB_ENV
         echo "DIY_PART_SH=${DIY_PART_SH}" >> $GITHUB_ENV
-        echo "SSH_ACTIONS=${SSH_ACTIONS}" >> $GITHUB_ENV
         echo "UPLOAD_BIN_DIR=${UPLOAD_BIN_DIR}" >> $GITHUB_ENV
         echo "UPLOAD_CONFIG=${UPLOAD_CONFIG}" >> $GITHUB_ENV
         echo "UPLOAD_FIRMWARE=${UPLOAD_FIRMWARE}" >> $GITHUB_ENV
@@ -107,7 +109,6 @@ jobs:
         echo "SERVERCHAN_SCKEY=${SERVERCHAN_SCKEY}" >> $GITHUB_ENV
         echo "REGULAR_UPDATE=${REGULAR_UPDATE}" >> $GITHUB_ENV
         echo "BY_INFORMATION=${BY_INFORMATION}" >> $GITHUB_ENV
-        echo "AUTOMATIC_AMLOGIC=${AUTOMATIC_AMLOGIC}" >> $GITHUB_ENV
         echo "CangKu=${Apidz##*/}" >> $GITHUB_ENV
         echo "Modelfile=${{matrix.target}}" >> $GITHUB_ENV
         # 2026-10-09: 由 secrets 计算一次供 if 条件使用(REPO_TOKEN 已从全局 env 移除)
@@ -213,6 +214,14 @@ jobs:
       run: |
         git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" openwrt
         cd openwrt
+        # 2026-10-29: REPO_COMMIT 可选钉住主源码; 留空则跟随 REPO_BRANCH(默认 master)。
+        if [ -n "${REPO_COMMIT:-}" ]; then
+          if [ "${#REPO_COMMIT}" -ne 40 ] || [[ ! "$REPO_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "!! REPO_COMMIT 不是 40 位十六进制 SHA: ${REPO_COMMIT}"; exit 1
+          fi
+          git fetch --depth 1 origin "$REPO_COMMIT" || { echo "!! 主源码固定 commit 拉取失败: ${REPO_COMMIT}"; exit 1; }
+          git checkout --detach "$REPO_COMMIT" || { echo "!! 主源码固定 commit 切换失败"; exit 1; }
+        fi
         # 2026-10-17: 不再 > /dev/null 2>&1 吞掉输出 —— 原先网络/源失败在这里静默, 直到很久以后
         # 才以别的形式炸出来。这一处 update 是必需的: 下面「加载设置」的 diy-part.sh 要对 feeds/luci 打补丁。
         ./scripts/feeds update -a
@@ -304,6 +313,12 @@ jobs:
             [ -d "$d/.git" ] || continue
             echo "$d: $(git -C "$d" rev-parse HEAD 2>/dev/null)"
           done
+          if [ -f "${GITHUB_WORKSPACE}/SOURCE_EXTRA.txt" ]; then
+            cat "${GITHUB_WORKSPACE}/SOURCE_EXTRA.txt"
+          fi
+          if [ -f "${GITHUB_WORKSPACE}/build/Lede_source/files/etc/openclash/core/clash_meta" ]; then
+            echo "clash_meta: $(sha256sum "${GITHUB_WORKSPACE}/build/Lede_source/files/etc/openclash/core/clash_meta" | cut -d' ' -f1) (prebuilt; upstream tag not recorded)"
+          fi
         } > "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt"
         # 2026-10-28: 在编译前把源码快照固定下来并上传 artifact。
         # 这样即使编译阶段的 Makefile 被上游注入, 事后也能核对"当时到底用了哪些 commit";
@@ -400,6 +415,12 @@ jobs:
       run: |
         cd openwrt
         source "${PATH1}/common.sh" && Diy_chuli > /dev/null 2>&1
+        # 2026-10-29: nanopi/armvirt 不支持 OTA。原逻辑在 Diy_xinxi 里改 shell 变量，
+        # 那时 Diy_Part2 已跑完，等于无效；这里在复制 AutoUpdate 之前生效，并写回 GITHUB_ENV。
+        if [[ "${TARGET_PROFILE}" =~ (friendlyarm_nanopi-r2s|friendlyarm_nanopi-r4s|armvirt) ]]; then
+          REGULAR_UPDATE=false
+          echo "REGULAR_UPDATE=false" >> "$GITHUB_ENV"
+        fi
         if [ "${REGULAR_UPDATE}" == "true" ]; then
           source "${PATH1}/upgrade.sh" && Diy_Part2 > /dev/null 2>&1
         fi
@@ -439,7 +460,7 @@ jobs:
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target), 'scripts/**', '.github/workflows/**') }}
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target)) }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-openwrt-
 
@@ -467,7 +488,7 @@ jobs:
             {
               cat "${SRC_DIR}/.config"
               cat "${SRC_DIR}/settings.ini"
-              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.github/workflows" -type f -print0 2>/dev/null \
+              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" -type f -print0 2>/dev/null \
                 | sort -z | xargs -0 sha256sum
             } | sha256sum | awk '{print $1}'
           )"
@@ -717,12 +738,12 @@ jobs:
     - name: 整理文件
       id: organizer
       run: |
-        if [ "${AUTOMATIC_AMLOGIC}" == "true" ]; then
-          source "${PATH1}/common.sh" && Diy_amlogic
-        fi
         cd openwrt
         echo "文件系统        类型   容量  已用  可用 使用% 挂载点"
         df -hT $PWD
+        # 2026-10-29: packages/ 只用于 ipk 上传(前面已归档), 不参与升级/发布;
+        # 先删掉再复制, 避免把整份 ipk 复制到 ${Home}/upgrade 后一直留着。
+        rm -rf bin/targets/*/*/packages
         cp -Rf bin/targets/*/* "${Home}"/upgrade
         cd bin/targets/*/*
         # 2026-10-09: 保留 *sha256sums*/*manifest*/*buildinfo*(体积小, 发布后可核对校验和与包清单);
@@ -744,6 +765,8 @@ jobs:
         [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
         [ -f "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" ] && cp "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" .
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "firmware_date=${date}" >> "$GITHUB_OUTPUT"
+        echo "ota_enabled=${REGULAR_UPDATE}" >> "$GITHUB_OUTPUT"
         echo "BOT=TRUE" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_ENV
 
@@ -847,7 +870,7 @@ jobs:
     - name: 电报通知
       if: env.status == 'success' && env.SERVERCHAN_SCKEY == 'true'
       run: |
-        curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件(${{env.CangKu}}仓库的#${{env.Run_number}}号)顺利编译完成了！💐" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+        curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件顺利编译完成了！💐" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
           || echo "::warning::电报通知发送失败(不影响固件与发布)"
 
     - name: 失败取证(归档日志与配置)
@@ -906,7 +929,7 @@ jobs:
   # sign job 在新 runner 上只处理 artifact，不执行构建树里的脚本。
   sign:
     needs: build
-    if: needs.build.outputs.regular_update == 'true'
+    if: needs.build.outputs.ota_enabled == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
@@ -981,6 +1004,33 @@ jobs:
         sha256sum -c sha256sums --quiet
         ls *.sha256.sig >/dev/null 2>&1 || { echo "::error::缺少 .sha256.sig"; exit 1; }
 
+    - name: 生成版本索引
+      env:
+        VERSION_TAG: AutoUpdate-${{ needs.build.outputs.firmware_date }}
+      run: |
+        set -euo pipefail
+        cd signed
+        [ "${VERSION_TAG#AutoUpdate-}" != "" ] || { echo "::error::firmware_date 为空, 无法生成日期 tag"; exit 1; }
+        {
+          printf '{\n'
+          printf '  "generated": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '  "channel": "AutoUpdate",\n'
+          printf '  "release": "%s",\n' "${VERSION_TAG}"
+          printf '  "assets": [\n'
+          first=1
+          for f in *; do
+            case "$f" in versions.json|sha256sums|*.sig) continue ;; esac
+            [ -f "$f" ] || continue
+            [ "${first}" -eq 1 ] || printf ',\n'
+            first=0
+            printf '    {"name":"%s","size":%s,"sha256":"%s"}' \
+              "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+          done
+          printf '\n  ]\n}\n'
+        } > versions.json
+        jq empty versions.json
+        echo "== versions.json 已生成: $(wc -c < versions.json) bytes =="
+
     - name: 云端更新2
       uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
       with:
@@ -989,6 +1039,17 @@ jobs:
         # 2026-10-21 已合并回 main: 发布通道恢复生产 AutoUpdate(测试分支要改回 AutoUpdate-618-test)
         tag: AutoUpdate
         overwrite: true
+        file_glob: true
+
+    - name: 发布可回滚日期 tag
+      # 2026-10-29: 生产 AutoUpdate tag 仍覆盖式更新; 同一批签名资产再发一份到
+      # AutoUpdate-<编译时间>, 手工回滚时可按日期 tag 找旧固件, 不必只依赖资产名排序。
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+      with:
+        repo_token: ${{ secrets.REPO_TOKEN }}
+        file: signed/*
+        tag: AutoUpdate-${{ needs.build.outputs.firmware_date }}
+        overwrite: false
         file_glob: true
 
     - name: 云端更新3

@@ -15,6 +15,8 @@
 - Execute bash /bin/AutoUpdate.sh -n Do not keep configuration updates
 
 > 默认命令会保留 `/etc/config`（LAN、PPPoE、ADH 等）；`-n` 不保留，适合全新安装或配置已损坏时。
+>
+> `AutoUpdate.sh -g` 的旧通道转换菜单（18.06 / 19.07 / 21.02）已停用；这些通道均已 EOL，请手动刷入当前固件。
 
 **注意：LuCI 23.05 与旧版 18.06 不兼容，不能保留配置升级，建议全新安装后重新设置**
 
@@ -33,7 +35,9 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 - **OpenClash 控制面板密码不再写死在仓库里**：构建时注入。仓库 secret `OPENCLASH_DASH_PASS` 优先，未配置则每次构建随机生成。
   在路由器上查看方式：`uci get openclash.@config[0].dashboard_password`
   **注意：这个密码会随公开镜像一起发布，不是设备级秘密；面板只应 LAN 可达，启用后建议首次登录修改。**
-- 每次构建的 release 里附带 **`BUILD_SOURCE.txt`** 和 **`SOURCE_LOCK.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、最终 `.config` 的 sha256；`SOURCE_LOCK.txt` 是最终 target/config 写入后的快照，便于事后核对和回滚。
+- 每次构建的 release 里附带 **`BUILD_SOURCE.txt`** 和 **`SOURCE_LOCK.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、最终 `.config` 的 sha256；`SOURCE_LOCK.txt` 是最终 target/config 写入后的快照，便于事后核对和回滚。`SOURCE_LOCK.txt` 还记录 `luci-app-filetransfer` / `luci-lib-fs` / `geo2txt` 的来源 commit 和入库 `clash_meta` 的 sha256。
+- 发布时除生产 `AutoUpdate` tag 外，还会保留 **`AutoUpdate-<编译时间>`** 日期 tag，并生成 **`versions.json`**（文件名、大小、sha256）；需要回滚时按日期 tag 找旧固件，不要依赖资产名排序。
+- 可选 **`REPO_COMMIT`**：在 `build/Lede_source/settings.ini` 填 40 位 commit SHA 可钉住主源码；留空则跟随 `REPO_BRANCH`（默认 master）。
 - 固件版本号由 `.github/workflows/compile-openwrt.yml` 的 `FIRMWARE_VER` 按构建日期生成（`RYY.MM.DD`，单一来源）；如需固定版本，只改这一处。
 - release 里保留 `*sha256sums*` / `*manifest*` / `*buildinfo*`，可用于校验与包清单核对。
 

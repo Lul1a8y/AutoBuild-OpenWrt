@@ -19,6 +19,12 @@ TIME() {
       }
 }
 source /bin/openwrt_info
+# 2026-10-29: 18.06/19.07/21.02 均已 EOL，转换菜单默认停用。
+# 仅救援旧设备时可显式 ALLOW_EOL_REPLACE=true 运行；正常设备请手动刷入当前固件。
+if [ "${ALLOW_EOL_REPLACE:-false}" != "true" ]; then
+	TIME r "固件转换功能已停用: 18.06/19.07/21.02 通道均已停止维护。请手动刷入当前固件。"
+	exit 1
+fi
 # 2026-10-28: /bin/openwrt_info 只导出 Github(仓库地址), 并不存在 Github_Tags 这个变量 ——
 # 下面 wget 的地址一直是空串, 因此本脚本从来没有成功过, 每次都停在"获取固件版本信息失败"。
 # 按 AutoUpdate.sh:75 的同款规则补出来("${Github##*com/}" 剥成 owner/repo)。
@@ -145,14 +151,12 @@ if [[ "${REPO_Name}" == "lede" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			TIME r "您退出了固件转换程序"
 			echo
 			sleep 2
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -191,7 +195,6 @@ if [[ "${REPO_Name}" == "lede" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			echo
@@ -199,7 +202,6 @@ if [[ "${REPO_Name}" == "lede" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -240,7 +242,6 @@ if [[ "${REPO_Name}" == "lede" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			cat >/bin/openwrt_info <<-EOF
@@ -262,7 +263,6 @@ if [[ "${REPO_Name}" == "lede" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		3)
 			echo
@@ -270,7 +270,6 @@ if [[ "${REPO_Name}" == "lede" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -313,7 +312,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			echo
@@ -321,7 +319,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -360,7 +357,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			echo
@@ -368,7 +364,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -409,7 +404,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			cat >/bin/openwrt_info <<-EOF
@@ -431,7 +425,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		3)
 			echo
@@ -439,7 +432,6 @@ if [[ "${REPO_Name}" == "lienol" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -482,7 +474,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			echo
@@ -490,7 +481,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -529,7 +519,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			echo
@@ -537,7 +526,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"
@@ -578,7 +566,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		2)
 			cat >/bin/openwrt_info <<-EOF
@@ -600,7 +587,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			sleep 2
 			bash /bin/AutoUpdate.sh	-s
 			exit 0
-		break
 		;;
 		3)
 			echo
@@ -608,7 +594,6 @@ if [[ "${REPO_Name}" == "mortal" ]]; then
 			echo
 			sleep 1
 			exit 0
-		break
     		;;
     		*)
 			TIME r "警告：输入错误,请输入正确的编号!"

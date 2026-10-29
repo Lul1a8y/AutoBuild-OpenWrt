@@ -39,6 +39,9 @@ if command -v ip6tables >/dev/null 2>&1; then
 	[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
 	if ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1; then
 		redirect_dns ip6tables
+	else
+		# 2026-10-29: 缺 ip6table_nat 时不能静默跳过, 否则 v6 客户端会绕过 ADH。
+		logger -t firewall.user "IPv6 DNS redirect skipped: ip6tables nat table unavailable" 2>/dev/null || true
 	fi
 fi
 

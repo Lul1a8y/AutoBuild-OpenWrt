@@ -395,41 +395,32 @@ echo "== 包内 AutoUpdate 已补空间字段校验和绝对 tmp 路径 =="
 #   设备拿旧版本比较 → 走 -lt 分支 → cron 无人值守时 read 读到空输入直接 exit 0,
 #   自动更新从此静默停摆且不报错。改成先把固件名抽出来再排序取最大
 #   (固件名等宽, 字典序即时间序); 不能直接对 JSON 原文行排序, 那样会打乱整行。
-if grep -q 'grep -E "$regex" "$tmpapi_version" | tail -n 1' "$AU_BIN"; then
-  sed -i 's#| tail -n 1)#| grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)#' "$AU_BIN"
-fi
-if ! grep -q 'sort | tail -n 1' "$AU_BIN"; then
-  echo "!! 包内 AutoUpdate 仍未按版本取最大(上游改写?), 可能选中手工补传的旧版本"
+# 2026-10-29: 只锚定 target_line= 这一行, 不再替换全文件所有 `| tail -n 1)`。
+#   旧写法在上游出现第二处 `| tail -n 1)` 时会把无关代码改坏, 而 sh -n 抓不到。
+TARGET_ORIG='    target_line=$(grep -E "$regex" "$tmpapi_version" | tail -n 1)'
+TARGET_PATCH='    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)'
+ORIG_COUNT="$(grep -Fxc "$TARGET_ORIG" "$AU_BIN" || true)"
+if [ "${ORIG_COUNT}" -gt 1 ]; then
+  echo "!! 包内 AutoUpdate 有 ${ORIG_COUNT} 处 target_line=...| tail -n 1), 无法安全锚定"
   exit 1
 fi
+if [ "${ORIG_COUNT}" -eq 1 ]; then
+  awk -v orig="$TARGET_ORIG" -v patched="$TARGET_PATCH" '
+    !done && $0 == orig { print patched; done=1; next }
+    { print }
+  ' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+fi
+PATCHED_COUNT="$(grep -Fxc "$TARGET_PATCH" "$AU_BIN" || true)"
+[ "${PATCHED_COUNT}" -eq 1 ] || {
+  echo "!! 包内 AutoUpdate 未按版本取最大(上游改写? target_line 锚点没命中)"
+  exit 1
+}
 echo "== 包内 AutoUpdate 改为按版本取最大, 不再依赖资产返回顺序 =="
 
-# 2026-10-28: 包内脚本的 -u/-k 只打印"云端版本低于本地", 但随后仍调用
-# Remote_download; cron 每周跑 -u 时, 如果发布被回滚/API 被篡改, 会自动降级。
-# 这里在 Remote_download 开头加版本守卫: 只有云端低于本地才跳过;
-# 云端等于/高于本地时行为不变(允许同版本重装, 正常升级照旧)。
-# 用 awk 插入, 避免 perl 替换串里的 $Select/${CLOUD_VERSION} 被 perl 插值吃掉。
-if ! grep -q 'CLOUD_VERSION.*-lt.*LOCAL_VERSION' "$AU_BIN"; then
-  grep -q '^Remote_download() {$' "$AU_BIN" || {
-    echo "!! 包内 AutoUpdate 缺少 Remote_download 锚点, 无法插入版本守卫"; exit 1
-  }
-  awk '!done && /^Remote_download\(\) \{$/ {
-    print
-    print "    if [ \"$Select\" = \"u\" ] || [ \"$Select\" = \"k\" ]; then"
-    print "        if [ \"${CLOUD_VERSION}\" -lt \"${LOCAL_VERSION}\" ]; then"
-    print "            TIME z \"云端版本低于本地, 跳过升级\"; exit 0"
-    print "        fi"
-    print "    fi"
-    print ""
-    done=1
-    next
-  }
-  { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
-fi
-grep -q 'CLOUD_VERSION.*-lt.*LOCAL_VERSION' "$AU_BIN" || {
-  echo "!! 包内 AutoUpdate 版本守卫未插入"; exit 1
-}
-echo "== 包内 AutoUpdate 已加 -u/-k 版本守卫(只阻止降级) =="
+# 2026-10-29: 删除原来的“Remote_download 版本守卫”。钉住的 04f2a37 里
+# Remote_information 对 LOCAL == / > CLOUD 已调用 TIME z(exit 0), -u/-k 根本
+# 到不了 Remote_download；插在 Remote_download 开头的 CLOUD_VERSION -lt LOCAL_VERSION
+# 是永远不成立的死代码。注释里“-u 仍会下载导致降级”与上游不符。
 
 
 # 2026-10-22: 同一个 `-u` 分支还会往 crontab 里塞 `*/10 * * * * /usr/bin/check_network`,
@@ -500,6 +491,7 @@ fi
 # 2026-10-22: clash_meta 是入库的 7.8MB UPX 加壳二进制, 随固件以 root 执行(OpenClash 内核)。
 # 仓库里此前没有任何地方校验它 —— 有提交权限的人换一个后门, diff 只显示"字节数没变",
 # 加壳还让静态扫描失效。这里钉死 sha256: 要升级内核, 请连同这里的值一起改并说明来源。
+# 2026-10-29: 来源/更新规则见 build/common/CLASH_META.md。
 CLASH_SHA="459c92959289214a8f8d11abea02057382048bc1add8574f04f1223b6095802a"
 CLASH_HIT=0
 for f in build/Lede_source/files/etc/openclash/core/clash_meta \

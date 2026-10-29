@@ -104,42 +104,10 @@ if [ -n "$(ls -A "${PATH1}/diy" 2>/dev/null)" ]; then
 	cp -Rf "${PATH1}"/diy/* "${Home}"
 fi
 if [ -n "$(ls -A "${PATH1}/files" 2>/dev/null)" ]; then
-	cp -Rf "${PATH1}/files" "${Home}" && chmod -R +x ${Home}/files
+	cp -Rf "${PATH1}/files" "${Home}" && chmod -R a+rX "${Home}/files"
 fi
 if [ -n "$(ls -A "${PATH1}/patches" 2>/dev/null)" ]; then
 	find "${PATH1}/patches" -type f -name '*.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 --forward --no-backup-if-mismatch"
-fi
-}
-
-################################################################################################################
-# s905x3_s905x2_s905x_s905d_s922x_s912 一键打包脚本
-# 【当前不可达】matrix 只有 Lede_source, 且 AUTOMATIC_AMLOGIC 不在 settings.ini 中设置;
-# workflow 的 if 判断永远不会成立。保留是为了以后恢复 amlogic 打包时不用重写(上游 281677160 模板)。
-################################################################################################################
-Diy_amlogic() {
-if [[ -n "$(ls -A "$GITHUB_WORKSPACE/amlogic_openwrt" 2>/dev/null)" ]]; then
-        git clone https://github.com/mdtycl/amlogic-s905d
-#	git clone https://github.com/ophub/amlogic-s9xxx-openwrt
-	mv amlogic-s905d/{amlogic-s9xxx,make} $GITHUB_WORKSPACE
-	rm -rf amlogic-s905d
-	source $GITHUB_WORKSPACE/amlogic_openwrt
-	if [[ ${amlogic_kernel} == "5.4.155" ]]; then
-		curl -fsSL https://raw.githubusercontent.com/ophub/amlogic-s9xxx-openwrt/main/.github/workflows/build-openwrt-lede.yml > open.yml
-		Make_kernel="$(cat open.yml | grep ./make | cut -d "k" -f3 | sed s/[[:space:]]//g)"
-		amlogic_kernel="${Make_kernel}"
-	else
-		amlogic_kernel="${amlogic_kernel}"
-	fi
-	if [[ -z "${Make_kernel}" ]];then
-		amlogic_kernel="5.4.155"
-	fi
-	mkdir -p $GITHUB_WORKSPACE/openwrt-armvirt
-	cp -Rf ${Home}/bin/targets/*/*/*.tar.gz $GITHUB_WORKSPACE/openwrt-armvirt/ && sync
-	sudo chmod +x make
-	sudo ./make -d -b "${amlogic_model}" -k "${amlogic_kernel}"
-	cp -Rf $GITHUB_WORKSPACE/out/* ${Home}/bin/targets/*/*
-else
-	TIME r "缺少打包所需的组合文件，您或者把diy-part.sh组合代码删除了"
 fi
 }
 
@@ -307,7 +275,7 @@ if [[ "${BY_INFORMATION}" == "true" ]]; then
 		}
 	fi
 fi
-rm -rf ${Home}/files/{README,README.md}
+rm -f "${Home}/files/README" "${Home}/files/README.md"
 }
 
 
@@ -315,9 +283,6 @@ rm -rf ${Home}/files/{README,README.md}
 # 编译信息
 ################################################################################################################
 Diy_xinxi() {
-if [[ "${TARGET_PROFILE}" =~ (friendlyarm_nanopi-r2s|friendlyarm_nanopi-r4s|armvirt) ]]; then
-	REGULAR_UPDATE="false"
-fi
 echo
 TIME b "编译源码: ${CODE}"
 TIME b "源码链接: ${REPO_URL}"
@@ -367,16 +332,8 @@ if [[ ${SERVERCHAN_SCKEY} == "true" ]]; then
 else
 	TIME r "电报通知: 关闭"
 fi
-if [[ ${SSH_ACTIONS} == "true" ]]; then
-	TIME y "SSH远程连接: 开启"
-else
-	TIME r "SSH远程连接: 关闭"
-fi
 if [[ ${BY_INFORMATION} == "true" ]]; then
 	TIME y "编译信息显示: 开启"
-fi
-if [[ ${SSHYC} == "true" ]]; then
-	TIME y "SSH远程连接临时开关: 开启"
 fi
 if [[ ${REGULAR_UPDATE} == "true" ]]; then
 	TIME y "固件在线更新: 开启"

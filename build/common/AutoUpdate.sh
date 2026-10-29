@@ -14,7 +14,7 @@ echo -e "${Yellow}命令用途：
 bash /bin/AutoUpdate.sh				[保留配置更新]
 bash /bin/AutoUpdate.sh	-n			[不保留配置更新]
 bash /bin/AutoUpdate.sh	-f			[强制更新固件(保留配置)]
-bash /bin/AutoUpdate.sh	-g			[把固件更改成其他作者固件,前提是你编译了有附带定时更新插件的其他作者的固件]
+bash /bin/AutoUpdate.sh	-g			[已停用: 18.06/19.07/21.02 旧通道均已 EOL]
 bash /bin/AutoUpdate.sh	-c			[更换Github地址]
 bash /bin/AutoUpdate.sh	-t			[执行测试模式(只运行,不安装,查看更新固件操作流程)]
 bash /bin/AutoUpdate.sh	-h			[列出帮助信息]
@@ -141,9 +141,13 @@ x86-64)
 	[[ -z "${Firmware_Type}" ]] && export Firmware_SFX=".bin"
 esac
 export CURRENT_Ver="${CURRENT_Version}${BOOT_Type}"
-echo "CURRENT_Version=${CURRENT_Version}" > /etc/openwrt_ver
-echo -e "\nCURRENT_Model=${EFI_Mode}${Firmware_SFX}" >> /etc/openwrt_ver
-echo -e "\nNEI_Luci=${Kernel} - ${Luci_Edition}" >> /etc/openwrt_ver
+# 2026-10-29: 只有内容变化时才写 /etc/openwrt_ver, 避免每次手动/定时运行都写 overlay。
+OPENWRT_VER_CONTENT="$(printf 'CURRENT_Version=%s\n\nCURRENT_Model=%s%s\n\nNEI_Luci=%s - %s\n' \
+	"${CURRENT_Version}" "${EFI_Mode}" "${Firmware_SFX}" "${Kernel}" "${Luci_Edition}")"
+if [ ! -f /etc/openwrt_ver ] || [ "$(cat /etc/openwrt_ver 2>/dev/null)" != "${OPENWRT_VER_CONTENT}" ]; then
+	printf '%s\n' "${OPENWRT_VER_CONTENT}" > /etc/openwrt_ver
+fi
+unset OPENWRT_VER_CONTENT
 cd /etc
 clear && echo "Openwrt-AutoUpdate Script ${Version}"
 echo
@@ -200,16 +204,30 @@ else
 				exit 1
 			}
 			Github_uci=$(uci get autoupdate.@login[0].github 2>/dev/null)
-			[[ -n "${Github_uci}" ]] && [[ "${Github_uci}" != "${Input_Other}" ]] && {
-				uci set autoupdate.@login[0].github=${Input_Other}
-				uci commit autoupdate
+			if [[ -n "${Github_uci}" ]] && [[ "${Github_uci}" != "${Input_Other}" ]]; then
+				uci set "autoupdate.@login[0].github=${Input_Other}" || {
+					TIME r "UCI 设置失败, 未修改 Github 地址"; exit 1
+				}
+				uci commit autoupdate || {
+					TIME r "UCI 提交失败, Github 地址可能未持久化"; exit 1
+				}
 				TIME y "Github 地址已更换为: ${Input_Other}"
 				TIME y "UCI 设置已更新!"
 				echo
-			}
+			fi
 			Input_Other="${Input_Other:-"$Github"}"
 			[[ "${Github}" != "${Input_Other}" ]] && {
-				sed -i "s?${Github}?${Input_Other}?g" /bin/openwrt_info
+				# 2026-10-29: URL 里的 . 在 sed 正则是通配符; 先转义再替换。
+				# 替换串里的 & 和 \ 也转义, 避免被 sed 当成反向引用。
+				Github_escaped="$(printf '%s' "${Github}" | sed 's/\./\\./g')"
+				Safe_Other="$(printf '%s' "${Input_Other}" | sed 's/[\\&]/\\&/g')"
+				sed -i "s?${Github_escaped}?${Safe_Other}?g" /bin/openwrt_info || {
+					TIME r "/bin/openwrt_info 写入失败, Github 地址未更新"; exit 1
+				}
+				unset Github_escaped Safe_Other
+				grep -Fq "${Input_Other}" /bin/openwrt_info || {
+					TIME r "/bin/openwrt_info 未写入新地址"; exit 1
+				}
 				# 2026-10-27: /bin/openwrt_info 只有本脚本(手动升级通道)读; LuCI 升级页和
 				# /usr/bin/AutoUpdate 读的是 /etc/openwrt_update 里的 GITHUB_LINK。
 				# 以前只改 openwrt_info, 换完仓库会出现"LuCI 查新仓库、固件仍从旧仓库下"的双源。
