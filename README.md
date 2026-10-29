@@ -28,7 +28,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 | ---- | ---- | ---- | ---- |
 | 192.168.50.2 | root | password | 12306 |
 
-**注意：默认 root 密码是上游 lede 的默认值 `password`，未做修改 —— 首次登录后请立即改掉。**
+**注意：默认 root 密码是上游 LEDE 的默认值 `password`，未做修改 —— 首次登录后必须立即改掉。如果设备会接入不可信 LAN，请先通过串口/控制台改密，再接入网络。**
 
 **构建期注入与可追溯（2026-10-09 起）**
 
@@ -47,7 +47,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 | secret | 用途 | 必填 |
 | ---- | ---- | ---- |
 | `REPO_TOKEN` | 发布 release / 云端更新（fine-grained PAT；只给目标仓库 `Contents: Read and write`，设置过期时间） | 仅发布链路需要 |
-| `FIRMWARE_SIGN_KEY_B64` | `.sha256` 清单的 Ed25519 私钥（base64）；只在 sign job 使用，build job 不读取 | `REGULAR_UPDATE=true` 时必填 |
+| `FIRMWARE_SIGN_KEY_B64` | `.sha256` 清单的 Ed25519 私钥（base64）；只在 main 的 sign job 使用，build job 不读取 | `REGULAR_UPDATE=true` 时必填 |
 | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 构建通知 | 否 |
 | `OPENCLASH_DASH_PASS` | OpenClash 面板密码；会写进镜像，**不是设备级秘密** | 否 |
 
@@ -59,7 +59,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 
 **固件签名密钥（`FIRMWARE_SIGN_KEY_B64`）**
 
-`REGULAR_UPDATE=true` 时，工作流会用 Ed25519 给每个 `<固件>.sha256` 清单签名，设备端用固件内置的 `/etc/firmware-signing.pub` 验签。
+`REGULAR_UPDATE=true` 且分支为 `main` 时，工作流会用 Ed25519 给每个 `<固件>.sha256` 清单签名，设备端用固件内置的 `/etc/firmware-signing.pub` 验签。
 
 推荐用下面的方式生成，**不要让私钥出现在终端输出里**：
 
@@ -85,7 +85,7 @@ rm -f fw-signing.pem
 - `fw-signing.pem`、`*.key` 不要提交；仓库 `.gitignore` 已覆盖这些文件。
 - 公钥 `build/Lede_source/files/etc/firmware-signing.pub` 是公开文件，必须与 secret 配对；workflow 在签名后会回验。
 - 轮换密钥后，旧固件设备内置的是旧公钥，会拒收新固件，需要手动刷一次新固件。
-- 签名私钥是固件信任根；GitHub Secret 只应给必要管理员访问，构建 job 不读取它，只有独立 sign job 使用。
+- 签名私钥是固件信任根；GitHub Secret 只应给必要管理员访问，构建 job 不读取它，只有 main 的独立 sign job 使用。
 
 > 未配置该 secret 时，`REGULAR_UPDATE=true` 的构建会在「检查签名密钥」步骤提前失败，不会等 5 小时编译完才报错。
 
@@ -106,16 +106,23 @@ ssh -p 12306 root@192.168.50.2 sh /tmp/router-acceptance.sh
 - 源码：coolsnowwolf/lede master 分支
 - 内核：6.18 LTS（main 已 pin 6.18；kernel-6.18-test 为验证分支）
 - LuCI：23.05
-- 插件源：kenzok8/openwrt-packages + kenzok8/small + vernesong/OpenClash + fw876/helloworld
+- 插件源：kenzok8/openwrt-packages + kenzok8/small + vernesong/OpenClash + fw876/helloworld + sbwml/luci-app-mosdns (geo2txt)
 - GFW 菜单归类：OpenClash / PassWall / SSR-Plus / ZeroTier / IPSec
 - 中文菜单重命名：改密码 / 网盘挂载 / 文件管理 / 端口转发 / 网络加速 等
-- PVE 虚拟平台：下载 `*-squashfs-combined-efi.img` 镜像，使用 `qm importdisk` 导入
+- x86 镜像类型：
+  - `*-squashfs-combined.img.gz`：Legacy / BIOS 启动
+  - `*-squashfs-combined-efi.img.gz`：UEFI 启动
+- PVE 虚拟平台：UEFI 虚拟机下载 `*-squashfs-combined-efi.img`，BIOS 虚拟机下载 `*-squashfs-combined.img`，使用 `qm importdisk` 导入
 
 **主要插件**
 
-OpenClash / PassWall / SSR-Plus / AdGuard Home / OpenList(文件管理, 原 AList) / ZeroTier / ttyd / netdata / Diskman
+OpenClash / PassWall / SSR-Plus / AdGuard Home / mosdns / OpenList(文件管理, 原 AList) / ZeroTier / ttyd / netdata / Diskman
 
 > AdGuard Home 默认只装 `luci-app-adguardhome` 壳，**不打包核心**。刷完固件后在 LuCI 页面点“更新核心”下载，或手动放入 `/usr/bin/AdGuardHome`；`/etc/AdGuardHome.yaml` 和已下载的核心会被 `keep.d` 保留，升级后还原设置即可。
+>
+> 只有核心存在（`/usr/bin/AdGuardHome` 或 `/etc/AdGuardHome/AdGuardHome`）且 `/etc/init.d/AdGuardHome` 已 enable 时，`firewall.user` 才会把 LAN 53 劫持到 5553；没有核心时 DNS 仍走 dnsmasq，不会断网。
+>
+> OpenClash 的 `clash_meta` 是仓库内置的 x86-64 静态内核，**不会随 OpenClash 上游自动更新**；升级时需同时替换二进制并更新 `build/common/post-feeds.sh` 的 `CLASH_SHA`。
 
 固件页面 Firmware page
 
@@ -127,6 +134,7 @@ OpenClash / PassWall / SSR-Plus / AdGuard Home / OpenList(文件管理, 原 ALis
 - [kenzok8 插件源](https://github.com/kenzok8/openwrt-packages)
 - [vernesong OpenClash](https://github.com/vernesong/OpenClash)
 - [fw876 helloworld](https://github.com/fw876/helloworld)
+- [sbwml luci-app-mosdns](https://github.com/sbwml/luci-app-mosdns)
 - [P3TERX 自动编译脚本](https://github.com/P3TERX/Actions-OpenWrt)
 - [Hyy2001X 定时更新脚本](https://github.com/Hyy2001X/AutoBuild-Actions)
 - [gd0772 原版 AutoBuild-OpenWrt](https://github.com/gd0772/AutoBuild-OpenWrt)
