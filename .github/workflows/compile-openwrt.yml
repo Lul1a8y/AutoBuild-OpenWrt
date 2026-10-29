@@ -245,12 +245,17 @@ jobs:
         # 仓库 secret OPENCLASH_DASH_PASS 优先; 未配置则本次随机生成(可在路由器上 uci get 读取)
         OC_PASS_SECRET: ${{ secrets.OPENCLASH_DASH_PASS }}
       run: |
-        echo "Compile_Date=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+        # 2026-10-30: 必须在同一个 shell 里先赋值，再写 GITHUB_ENV；
+        # 直接 echo "date=${Compile_Date}" 时 GITHUB_ENV 还没生效，date 会写成空串。
+        COMPILE_DATE="$(date +%Y%m%d%H%M)"
+        DATE_SUFFIX="$(date +%m-%d)"
+        [ -n "${COMPILE_DATE}" ] || { echo "!! Compile_Date 生成失败"; exit 1; }
+        echo "Compile_Date=${COMPILE_DATE}" >> "$GITHUB_ENV"
         # 2026-10-30: date/date1 也改为编译开始时生成, 与 Compile_Date、固件名保持同一时间基准;
         # 原先在编译结束后生成, normal release tag 会比固件名时间戳晚数小时。
         # date 统一用 12 位(与固件名一致), 不再和 14 位格式并存。
-        echo "date=${Compile_Date}" >> $GITHUB_ENV
-        echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
+        echo "date=${COMPILE_DATE}" >> "$GITHUB_ENV"
+        echo "date1=${DATE_SUFFIX}" >> "$GITHUB_ENV"
         OC_CFG="${GITHUB_WORKSPACE}/build/${{matrix.target}}/files/etc/config/openclash"
         if [ -f "$OC_CFG" ]; then
           if [ -n "$OC_PASS_SECRET" ]; then
@@ -789,6 +794,10 @@ jobs:
         [ "$(ls -1 | wc -l)" -ge 2 ] || { echo "!! 发布目录资产少于 2 个"; exit 1; }
         [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
         [ -f "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" ] && cp "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" .
+        # 2026-10-30: 这两个变量为空时 release tag 会为空, ncipollo action 会直接抛
+        # "No tag found in ref or input!"; 在整理文件阶段就失败, 不要等编译完。
+        [ -n "${Compile_Date:-}" ] || { echo "!! Compile_Date 为空, release tag/固件名会失效"; exit 1; }
+        [ -n "${date:-}" ] || { echo "!! date 为空, 发布固件会失败"; exit 1; }
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "firmware_date=${Compile_Date}" >> "$GITHUB_OUTPUT"
         echo "ota_enabled=${REGULAR_UPDATE}" >> "$GITHUB_OUTPUT"
