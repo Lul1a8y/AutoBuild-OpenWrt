@@ -257,7 +257,7 @@ else
 		Shell_Helper
 	;;
 	-g | -G)
-		bash /bin/replace.sh
+		bash /bin/replace.sh || exit 1
 		sleep 1
 		exit 0
 	;;
