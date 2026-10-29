@@ -72,11 +72,10 @@ find . -name 'luci-app-wrtbwmon' -o -name 'wrtbwmon' | xargs -i rm -rf {}
 Diy_all() {
 
 if [[ ${REGULAR_UPDATE} == "true" ]]; then
-	# 2026-10-21: 固定 commit, 不再跟随上游 master(上游改主分支/删库/推坏提交都会直接炸构建)
-	# 升级时改下面 checkout 的 SHA 即可: git ls-remote https://github.com/281677160/luci-app-autoupdate HEAD
+	# 2026-10-30: 跟随上游默认分支; post-feeds 的锚点断言会在上游结构变化时直接失败,
+	# 不会静默跳过补丁。若需要临时冻结, 再在这里加 git checkout <SHA>。
 	APP_DIR="feeds/luci/applications/luci-app-autoupdate"
 	git clone https://github.com/281677160/luci-app-autoupdate "${APP_DIR}" || { echo "!! luci-app-autoupdate 拉取失败, 构建中止"; exit 1; }
-	git -C "${APP_DIR}" checkout -q 04f2a3708ec0bb216c6dec2e51695f6a7e906a56 || { echo "!! luci-app-autoupdate 固定 commit 校验失败, 构建中止"; exit 1; }
 	cp -Rf "${PATH1}"/{AutoUpdate.sh,replace.sh} package/base-files/files/bin
 	# 2026-10-27: cp 保持仓库里的 0644, 断言 -x 会让本地构建误判"未就位"(CI 里靠
 	# workflow 的 chmod -R +x 蒙过去)。这里自己补权限再断言。

@@ -6,37 +6,10 @@
 # 2026-09-03: 补拉 geo2txt — luci-app-mosdns v1.7.12 新依赖，kenzok8/small 漏同步，9/2 编译在此失败
 # 2026-09-03: 克隆全部 depth 1 + 末尾源码完整性检查（9/2 OpenClash 克隆超时被静默丢弃的教训）
 
-# ===== 第三方源码固定 commit（2026-10-29）=====
-# 原先全部 clone master/v5 分支 tip：同一份本仓库 commit 重编可能拉到不同上游代码，
-# 上游被投毒时构建机会执行其 Makefile/脚本。这里全部钉 40 位 SHA；升级时只改这里，
-# 并把新 SHA 写进 SOURCE_LOCK（workflow 会记录主要 clone 的 HEAD）。
-KENZOK8_PACKAGES_COMMIT="1ee8536d187d4b16eda06f19f8ae3770420f3c3b"
-KENZOK8_SMALL_COMMIT="bcf6105d80c8bbc5f6bde9f4916fc36baa765d23"
-OPENCLASH_COMMIT="e553e82e01c697aefbe1555261a503f425e00ccd"
-HELLOWORLD_COMMIT="2abdc9aa9e19607774dc9789709212b70b8607c6"
-LUCI_COMMIT="3af75fcd74bac12e771e788ea41994f9b57e20cd"
-MOSDNS_COMMIT="dbdd91ab8ac8b079b6a3ca1a48d99e970d17111b"
-
-# clone --depth 1 后校验/切换到固定 SHA；分支 tip 已经等于目标 SHA 时不重复 fetch。
-clone_pinned() {
-	local _url="$1" _dir="$2" _branch="$3" _sha="$4" _head
-	rm -rf "$_dir"
-	git clone --depth 1 -b "$_branch" "$_url" "$_dir" || {
-		echo "!! clone 失败: $_url ($_branch)"; return 1
-	}
-	_head="$(git -C "$_dir" rev-parse HEAD 2>/dev/null || true)"
-	if [ "$_head" != "$_sha" ]; then
-		git -C "$_dir" fetch --depth 1 origin "$_sha" || {
-			echo "!! 固定 commit 拉取失败: $_url $_sha"; return 1
-		}
-		git -C "$_dir" checkout -q --detach "$_sha" || return 1
-	fi
-	_head="$(git -C "$_dir" rev-parse HEAD 2>/dev/null || true)"
-	[ "$_head" = "$_sha" ] || {
-		echo "!! 固定 commit 校验失败: $_dir 期望 $_sha 实际 ${_head:-<空>}"; return 1
-	}
-}
-
+# ===== 第三方源码跟随上游 =====
+# 2026-10-30: 按用户要求不钉第三方 package 仓，跟随 master/v5 tip，保留灵活性；
+# 实际 HEAD 仍会写入 SOURCE_EXTRA/SOURCE_LOCK，定期构建时据此检查上游变化。
+# 如果某次上游改动导致构建失败，再临时在对应 clone 后 checkout 固定 SHA 排查。
 SOURCE_EXTRA="${GITHUB_WORKSPACE:-$PWD}/SOURCE_EXTRA.txt"
 : > "$SOURCE_EXTRA"
 
@@ -75,8 +48,8 @@ grep -q "$TTL_PAT" "$TTL_DEFAULT" \
 echo "== 控制台登录: $(grep -c 'set system.@system\[0\].ttylogin=1' "$TTL_DEFAULT") 处注入, $TTL_DEFAULT =="
 
 # ===== 添加权威插件源 =====
-clone_pinned "https://github.com/kenzok8/openwrt-packages" "package/kenzok8" master "$KENZOK8_PACKAGES_COMMIT" || exit 1
-clone_pinned "https://github.com/kenzok8/small" "package/kenzok8-small" master "$KENZOK8_SMALL_COMMIT" || exit 1
+git clone --depth 1 -b master https://github.com/kenzok8/openwrt-packages package/kenzok8 || { echo "!! kenzok8/openwrt-packages clone 失败"; exit 1; }
+git clone --depth 1 -b master https://github.com/kenzok8/small package/kenzok8-small || { echo "!! kenzok8/small clone 失败"; exit 1; }
 
 # ===== geo2txt 补拉：luci-app-mosdns ≥1.7.12 的新依赖（2026-09-03 修复）=====
 # 根因: kenzok8/small 同步 luci-app-mosdns 时漏带上游 sbwml/luci-app-mosdns
@@ -84,9 +57,12 @@ clone_pinned "https://github.com/kenzok8/small" "package/kenzok8-small" master "
 #       pkg_hash_check_unresolved: cannot find dependency geo2txt for luci-app-mosdns
 # 方案: 从 sbwml 官方 v5 分支克隆后拷贝 geo2txt 目录（同 filetransfer 的 clone+cp 做法，
 #       sparse-checkout 在 CI 不稳定不用）
-clone_pinned "https://github.com/sbwml/luci-app-mosdns.git" "/tmp/mosdns-upstream" v5 "$MOSDNS_COMMIT" || exit 1
+git clone --depth 1 --single-branch -b v5 \
+	https://github.com/sbwml/luci-app-mosdns.git /tmp/mosdns-upstream || { echo "!! sbwml/luci-app-mosdns clone 失败"; exit 1; }
+MOSDNS_SHA="$(git -C /tmp/mosdns-upstream rev-parse HEAD 2>/dev/null || true)"
+[ -n "$MOSDNS_SHA" ] || { echo "!! 无法读取 sbwml/luci-app-mosdns HEAD"; exit 1; }
 cp -r /tmp/mosdns-upstream/geo2txt package/kenzok8-small/geo2txt
-printf 'sbwml/luci-app-mosdns (geo2txt): %s\n' "$MOSDNS_COMMIT" >> "$SOURCE_EXTRA"
+printf 'sbwml/luci-app-mosdns (geo2txt): %s\n' "$MOSDNS_SHA" >> "$SOURCE_EXTRA"
 rm -rf /tmp/mosdns-upstream
 
 # ===== 默认IP 192.168.50.2 =====
@@ -127,8 +103,8 @@ rm -rf package/kenzok8/luci-app-argon-config
 # 自定义概览页内容通过修改 JS 视图实现（在工作流 yml 中处理）
 
 # ===== 官方源 clone =====
-clone_pinned "https://github.com/vernesong/OpenClash.git" "package/openclash" master "$OPENCLASH_COMMIT" || exit 1
-clone_pinned "https://github.com/fw876/helloworld.git" "package/helloworld" master "$HELLOWORLD_COMMIT" || exit 1
+git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/openclash || { echo "!! OpenClash clone 失败"; exit 1; }
+git clone --depth 1 -b master https://github.com/fw876/helloworld.git package/helloworld || { echo "!! helloworld clone 失败"; exit 1; }
 
 # ===== kenzok8/openwrt-packages 嵌套目录修复 =====
 # kenzok8 仓库有些包存在 pkg/pkg/Makefile 嵌套，编译系统会跳过
@@ -455,13 +431,16 @@ sed -i 's/+@wget-any //g' feeds/luci/themes/luci-theme-argon/Makefile 2>/dev/nul
 # ⚠️ 必须添加 menu.d JSON，LuCI 23.05+ 的菜单树从 menu.d 生成，缺了菜单不显示
 # ⚠️ 必须添加 ACL 权限文件，否则 rpcd 不授权页面访问
 # 不用 sparse-checkout（CI 环境经常失败），clone depth 1 后直接 cp
-clone_pinned "https://github.com/coolsnowwolf/luci.git" "/tmp/ft-luci" master "$LUCI_COMMIT" || exit 1
+git clone --depth 1 --single-branch -b master \
+	https://github.com/coolsnowwolf/luci.git /tmp/ft-luci || { echo "!! coolsnowwolf/luci clone 失败"; exit 1; }
+LUCI_SHA="$(git -C /tmp/ft-luci rev-parse HEAD 2>/dev/null || true)"
+[ -n "$LUCI_SHA" ] || { echo "!! 无法读取 coolsnowwolf/luci HEAD"; exit 1; }
 # 2026-10-28: 先删除目标再拷贝。若上游 feed 以后重新加入同名包,
 # `cp -r src dest/` 会嵌套成 dest/src/, 导致实际编译的是旧版。
 rm -rf feeds/luci/applications/luci-app-filetransfer feeds/luci/libs/luci-lib-fs
 cp -r /tmp/ft-luci/applications/luci-app-filetransfer feeds/luci/applications/
 cp -r /tmp/ft-luci/libs/luci-lib-fs feeds/luci/libs/
-printf 'coolsnowwolf/luci (luci-app-filetransfer, luci-lib-fs): %s\n' "$LUCI_COMMIT" >> "$SOURCE_EXTRA"
+printf 'coolsnowwolf/luci (luci-app-filetransfer, luci-lib-fs): %s\n' "$LUCI_SHA" >> "$SOURCE_EXTRA"
 # 2026-10-28: 不要在这里删 /tmp/ft-luci —— 下面的 i18n 块还要从它复制
 # po/zh-cn 或 po/zh_Hans/filetransfer.po; 删除动作移到 i18n 块之后。
 

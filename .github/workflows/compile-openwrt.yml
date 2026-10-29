@@ -3,11 +3,11 @@ on:
   workflow_dispatch:
   # 2026-10-09: 移除 push 触发器 —— 原来只挂在一个死路径(build/Tianling_source/start-up/start,
   # 该源不在 matrix 里), 等于「改了它白烧一次 5h 编译」的陷阱。去掉后提交代码不会意外触发编译,
-  # 构建走手动 dispatch + 下面每 2 个月(奇数月 1 号 17:00 UTC)的定时, 节奏见 292045f。若要「提交即编译」, 把 paths 指向真实输入
+  # 构建走手动 dispatch + 下面每月 1 号 17:00 UTC 的定时, 用于跟随上游并检查构建；节奏见 292045f。若要「提交即编译」, 把 paths 指向真实输入
   # (build/Lede_source/** 或 build/common/**) 再加回 push: 段。
 
   schedule:
-   - cron: 0 17 1 */2 *
+   - cron: 0 17 1 * *
 
 env:
   Github: https://github.com/${{github.repository}}
@@ -230,14 +230,8 @@ jobs:
           git fetch --depth 1 origin "$REPO_COMMIT" || { echo "!! 主源码固定 commit 拉取失败: ${REPO_COMMIT}"; exit 1; }
           git checkout --detach "$REPO_COMMIT" || { echo "!! 主源码固定 commit 切换失败"; exit 1; }
         fi
-        # 2026-10-30: 使用仓库里的 pinned feeds.conf, 把 feeds/* 也钉到固定 commit。
-        if [ -f "${GITHUB_WORKSPACE}/build/${{matrix.target}}/feeds.conf" ]; then
-          cp -f "${GITHUB_WORKSPACE}/build/${{matrix.target}}/feeds.conf" feeds.conf
-          echo "== 使用 pinned feeds.conf =="
-          grep -E '^src-git' feeds.conf
-        else
-          echo "::warning::未找到 build/${{matrix.target}}/feeds.conf, feeds 仍跟随上游分支"
-        fi
+        # 2026-10-30: 按用户要求 feeds 跟随上游 feeds.conf.default 的 tip, 不再复制 pinned feeds.conf;
+        # 实际 HEAD 仍记录在 SOURCE_LOCK.txt, 定期构建时用构建结果检查上游变化。
         # 2026-10-17: 不再 > /dev/null 2>&1 吞掉输出 —— 原先网络/源失败在这里静默, 直到很久以后
         # 才以别的形式炸出来。这一处 update 是必需的: 下面「加载设置」的 diy-part.sh 要对 feeds/luci 打补丁。
         ./scripts/feeds update -a
@@ -490,7 +484,7 @@ jobs:
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), format('build/{0}/feeds.conf', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target)) }}
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target)) }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-openwrt-
 
@@ -518,7 +512,7 @@ jobs:
             {
               cat "${SRC_DIR}/.config"
               cat "${SRC_DIR}/settings.ini"
-              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" "${SRC_DIR}/feeds.conf" -type f -print0 2>/dev/null \
+              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" -type f -print0 2>/dev/null \
                 | sort -z | xargs -0 sha256sum
             } | sha256sum | awk '{print $1}'
           )"

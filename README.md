@@ -38,7 +38,7 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 - 每次构建的 release 里附带 **`BUILD_SOURCE.txt`** 和 **`SOURCE_LOCK.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、最终 `.config` 的 sha256；`SOURCE_LOCK.txt` 是最终 target/config 写入后的快照，便于事后核对和回滚。`SOURCE_LOCK.txt` 还记录 `luci-app-filetransfer` / `luci-lib-fs` / `geo2txt` 的来源 commit 和入库 `clash_meta` 的 sha256。
 - 发布时除生产 `AutoUpdate` tag 外，还会保留 **`AutoUpdate-<编译时间>`** 日期 tag，并生成 **`versions.json`**（文件名、大小、sha256）；需要回滚时按日期 tag 找旧固件，不要依赖资产名排序。
 - 可选 **`REPO_COMMIT`**：在 `build/Lede_source/settings.ini` 填 40 位 commit SHA 可钉住主源码；留空则跟随 `REPO_BRANCH`（默认 master）。
-- feeds 也钉在 `build/Lede_source/feeds.conf`（packages/luci/routing/telephony/helloworld）；升级 feeds 时同时更新这里和 `SOURCE_LOCK.txt`。只有 `main` 分支会创建 release / 更新 `AutoUpdate`，测试分支只构建 artifact。
+- feeds 和第三方 package 仓默认跟随上游 tip；每次构建会把实际 commit 写进 `SOURCE_LOCK.txt`。每月 1 号 17:00 UTC 定时构建一次，用于跟随上游并检查构建结果。只有 `main` 分支会创建 release / 更新 `AutoUpdate`，测试分支只构建 artifact。
 - 固件版本号由 `.github/workflows/compile-openwrt.yml` 的 `FIRMWARE_VER` 按构建日期生成（`RYY.MM.DD`，单一来源）；如需固定版本，只改这一处。
 - release 里保留 `*sha256sums*` / `*manifest*` / `*buildinfo*`，可用于校验与包清单核对。
 
