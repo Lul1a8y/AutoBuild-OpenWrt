@@ -14,10 +14,32 @@
 # 2026-10-23: 加 -i br-lan。原写法不限入接口, WAN 侧到 53 的包也会被 DNAT 到 5553,
 # 计数器里混着公网扫描流量(实测 udp 2451 个包里大部分来自 WAN), 既污染统计, 也让
 # "劫持的是 LAN 客户端"这个前提在报文层面不成立。加 -i br-lan 后语义与注释一致。
-for _p in udp tcp; do
-	while iptables -t nat -C PREROUTING -i br-lan -p $_p --dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
-		iptables -t nat -D PREROUTING -i br-lan -p $_p --dport 53 -j REDIRECT --to-ports 5553 || break
+# 2026-10-29: 抽成函数, 同时处理 IPv4/IPv6; AGH 当前监听 :::5553。
+
+redirect_dns() {
+	_ipt="$1"
+	for _p in udp tcp; do
+		while "$_ipt" -t nat -C PREROUTING -i br-lan -p "$_p" \
+			--dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
+			"$_ipt" -t nat -D PREROUTING -i br-lan -p "$_p" \
+				--dport 53 -j REDIRECT --to-ports 5553 || break
+		done
+		if ! "$_ipt" -t nat -A PREROUTING -i br-lan -p "$_p" \
+			--dport 53 -j REDIRECT --to-ports 5553; then
+			logger -t firewall.user "DNS redirect add failed: $_ipt $_p" 2>/dev/null || true
+		fi
 	done
-	iptables -t nat -A PREROUTING -i br-lan -p $_p --dport 53 -j REDIRECT --to-ports 5553
-done
-unset _p
+}
+
+# IPv4
+redirect_dns iptables
+
+# IPv6：先确认 ip6tables 和 nat 表可用，避免 IPv6 关闭时刷错误日志
+if command -v ip6tables >/dev/null 2>&1; then
+	[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
+	if ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1; then
+		redirect_dns ip6tables
+	fi
+fi
+
+unset _ipt _p
