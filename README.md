@@ -30,7 +30,8 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 
 - **OpenClash 控制面板密码不再写死在仓库里**：构建时注入。仓库 secret `OPENCLASH_DASH_PASS` 优先，未配置则每次构建随机生成。
   在路由器上查看方式：`uci get openclash.@config[0].dashboard_password`
-- 每次构建的 release 里附带 **`BUILD_SOURCE.txt`** 和 **`SOURCE_LOCK.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、`.config` 的 sha256；`SOURCE_LOCK.txt` 是编译前的快照，便于事后核对和回滚。
+  **注意：这个密码会随公开镜像一起发布，不是设备级秘密；面板只应 LAN 可达，启用后建议首次登录修改。**
+- 每次构建的 release 里附带 **`BUILD_SOURCE.txt`** 和 **`SOURCE_LOCK.txt`**：记录本次固件对应的 AutoBuild-OpenWrt commit、lede / feeds 各源 commit、最终 `.config` 的 sha256；`SOURCE_LOCK.txt` 是最终 target/config 写入后的快照，便于事后核对和回滚。
 - 固件版本号由 `.github/workflows/compile-openwrt.yml` 的 `FIRMWARE_VER` 按构建日期生成（`RYY.MM.DD`，单一来源）；如需固定版本，只改这一处。
 - release 里保留 `*sha256sums*` / `*manifest*` / `*buildinfo*`，可用于校验与包清单核对。
 
@@ -38,25 +39,46 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 
 | secret | 用途 | 必填 |
 | ---- | ---- | ---- |
-| `REPO_TOKEN` | 发布 release / 云端更新（repo 级 PAT） | 是 |
-| `FIRMWARE_SIGN_KEY_B64` | `.sha256` 清单的 Ed25519 私钥（base64） | `REGULAR_UPDATE=true` 时必填 |
+| `REPO_TOKEN` | 发布 release / 云端更新（fine-grained PAT；只给目标仓库 `Contents: Read and write`，设置过期时间） | 仅发布链路需要 |
+| `FIRMWARE_SIGN_KEY_B64` | `.sha256` 清单的 Ed25519 私钥（base64）；只在 sign job 使用，build job 不读取 | `REGULAR_UPDATE=true` 时必填 |
 | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 构建通知 | 否 |
-| `OPENCLASH_DASH_PASS` | OpenClash 面板密码（不配置则随机生成） | 否 |
+| `OPENCLASH_DASH_PASS` | OpenClash 面板密码；会写进镜像，**不是设备级秘密** | 否 |
+
+> secret 只放在 GitHub 仓库 Secret 里，不要写进 README、issue、提交记录或聊天。
+>
+> `REPO_TOKEN` 建议用 fine-grained PAT，只授权目标仓库的 `Contents: Read and write`；不要用带 admin/workflow 权限的 classic token。
+>
+> `FIRMWARE_SIGN_KEY_B64` 是固件签名根信任，泄露等于攻击者可以签出被设备接受的固件；仓库管理员权限也要保护好。
 
 **固件签名密钥（`FIRMWARE_SIGN_KEY_B64`）**
 
-`REGULAR_UPDATE=true` 时，工作流会用 Ed25519 给每个 `<固件>.sha256` 清单签名，设备端用固件内置的 `/etc/firmware-signing.pub` 验签。生成方法：
+`REGULAR_UPDATE=true` 时，工作流会用 Ed25519 给每个 `<固件>.sha256` 清单签名，设备端用固件内置的 `/etc/firmware-signing.pub` 验签。
+
+推荐用下面的方式生成，**不要让私钥出现在终端输出里**：
 
 ```sh
+umask 077
 openssl genpkey -algorithm ED25519 -out fw-signing.pem
+
+# 公钥写入仓库；这是公开文件，必须提交/替换
 openssl pkey -in fw-signing.pem -pubout \
   -out build/Lede_source/files/etc/firmware-signing.pub
-base64 -w0 fw-signing.pem
+
+# 直接把私钥交给 gh，避免 base64 打印到屏幕
+base64 -w0 fw-signing.pem | \
+  gh secret set FIRMWARE_SIGN_KEY_B64 --repo <owner>/<repo>
+
+rm -f fw-signing.pem
 ```
 
-把最后一行输出存到 GitHub secret `FIRMWARE_SIGN_KEY_B64`；`fw-signing.pem` 和 `*.key` 不要提交。生成命令会把公钥写到 `build/Lede_source/files/etc/firmware-signing.pub`，记得把它一并提交/替换仓库里的旧公钥。
+如果没有 `gh`，可以在 GitHub Secret 页面手工新建，但不要把 `base64` 输出粘贴到 issue、聊天或日志；终端 scrollback 也要清掉。
 
-轮换密钥后，旧固件设备内置的是旧公钥，会拒收新固件，需要手动刷一次新固件。
+**注意：**
+
+- `fw-signing.pem`、`*.key` 不要提交；仓库 `.gitignore` 已覆盖这些文件。
+- 公钥 `build/Lede_source/files/etc/firmware-signing.pub` 是公开文件，必须与 secret 配对；workflow 在签名后会回验。
+- 轮换密钥后，旧固件设备内置的是旧公钥，会拒收新固件，需要手动刷一次新固件。
+- 签名私钥是固件信任根；GitHub Secret 只应给必要管理员访问，构建 job 不读取它，只有独立 sign job 使用。
 
 > 未配置该 secret 时，`REGULAR_UPDATE=true` 的构建会在「检查签名密钥」步骤提前失败，不会等 5 小时编译完才报错。
 
