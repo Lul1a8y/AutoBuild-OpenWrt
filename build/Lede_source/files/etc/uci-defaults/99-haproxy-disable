@@ -1,0 +1,8 @@
+#!/bin/sh
+# 2026-10-29: HAProxy 默认不启动。
+# 保留 haproxy 二进制，供 PassWall 的“负载均衡”功能按需启动；
+# 只关闭 OpenWrt 包自带的系统服务(/etc/haproxy.cfg 示例配置, 60000 健康检查)。
+[ -x /etc/init.d/haproxy ] || exit 0
+/etc/init.d/haproxy stop >/dev/null 2>&1 || true
+/etc/init.d/haproxy disable >/dev/null 2>&1 || true
+exit 0
