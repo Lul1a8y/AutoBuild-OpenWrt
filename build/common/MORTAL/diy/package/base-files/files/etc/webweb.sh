@@ -3,9 +3,8 @@
 sed -i 's/<a href="https:\/\/github/<!--<a href="https:\/\/github/g' /usr/lib/lua/luci/view/themes/*/footer.htm
 sed -i 's/luciversion %>)<\/a> \//luciversion %>)<\/a> \/-->/g' /usr/lib/lua/luci/view/themes/*/footer.htm
 
-[[ ! -f /mnt/network ]] && chmod +x /etc/networkip && source /etc/networkip
+[ -f /etc/networkip ] && chmod +x /etc/networkip && source /etc/networkip
 
-cp -Rf /etc/config/network /mnt/network
 
 if [[ `grep -c "x86_64" /etc/openwrt_release` -eq '0' ]]; then
   source /etc/openwrt_release

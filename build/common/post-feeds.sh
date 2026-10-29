@@ -311,7 +311,7 @@ echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置
 #      留下只会每 10 分钟刷一条 sh: not found(post-feeds 删的是静态那行, 拦不住这里)。
 #   兜底的 -F -q 改成 -F: -q 只是静默, -n 才是不保留配置, 原写法语义含糊。
 if grep -q 'beifen_luci' "$AU_BIN"; then
-  perl -0pi -e 's{        # 清理配置文件\n        mv /etc/config/luci /tmp/beifen_luci\n        # 添加定时任务\n        sed -i .*?check_network.*?\n        echo .*?check_network.*?\n        # 重启 cron 服务\n        /etc/init.d/cron restart\n        # 备份系统\n        rm -rf /mnt/\*upback\.tar\.gz\n        sysupgrade -b /mnt/upback\.tar\.gz\n        mv /tmp/beifen_luci /etc/config/luci\n}{        # 2026-10-28: 备份必须原样包含 /etc/config/luci, 且不能写在 overlay 上的 /mnt\n        #   (细节见 post-feeds.sh 里同名注释); check_network 的定时任务也不再追加。\n        rm -f /tmp/upback.tar.gz\n        sysupgrade -b /tmp/upback.tar.gz\n}s' "$AU_BIN"
+  perl -0pi -e 's{        # 清理配置文件\n        mv /etc/config/luci /tmp/beifen_luci\n        # 添加定时任务\n        sed -i .*?check_network.*?\n        echo .*?check_network.*?\n        # 重启 cron 服务\n        /etc/init.d/cron restart\n        # 备份系统\n        rm -rf /mnt/\*upback\.tar\.gz\n        sysupgrade -b /mnt/upback\.tar\.gz\n        mv /tmp/beifen_luci /etc/config/luci\n}{        # 2026-10-28: 备份必须原样包含 /etc/config/luci, 且不能写在 overlay 上的 /mnt\n        #   (细节见 post-feeds.sh 里同名注释); check_network 的定时任务也不再追加。\n        rm -f /tmp/upback.tar.gz\n        ( umask 077; sysupgrade -b /tmp/upback.tar.gz )\n        chmod 600 /tmp/upback.tar.gz 2>/dev/null || true\n}s' "$AU_BIN"
   perl -0pi -e 's{if \[ -f "/mnt/upback\.tar\.gz" \]; then}{if [ -f "/tmp/upback.tar.gz" ]; then}; s{UPGRADE_COMMAND="sysupgrade -F -f /mnt/upback\.tar\.gz"}{UPGRADE_COMMAND="sysupgrade -F -f /tmp/upback.tar.gz"}; s{UPGRADE_COMMAND="sysupgrade -F -q"}{UPGRADE_COMMAND="sysupgrade -F"}' "$AU_BIN"
 fi
 if grep -q 'beifen_luci' "$AU_BIN"; then
@@ -327,6 +327,69 @@ if grep -q 'usr/bin/check_network' "$AU_BIN"; then
   exit 1
 fi
 echo "== 已修正包内 AutoUpdate 的 -u 备份路径/配置搬移/check_network 追加 =="
+
+# 2026-10-29: REMOTE_FIRMWARE 来自未认证的 zzz_api；原来只在下载和 chmod 之后才
+# 做字符白名单。现在把校验前移到 Remote_download 的第一行，任何 rm/wget/chmod
+# 之前就拒绝非法名字，避免路径注入。
+if ! grep -q '2026-10-29: 下载前校验固件名' "$AU_BIN"; then
+  grep -q '^Remote_download() {$' "$AU_BIN" || {
+    echo "!! 包内 AutoUpdate 缺少 Remote_download 锚点, 无法插入下载前固件名校验"; exit 1
+  }
+  awk '!done && /^Remote_download\(\) \{$/ {
+    print
+    print "    # 2026-10-29: 下载前校验固件名, 拒绝未认证 API 注入的路径字符"
+    print "    case \"$REMOTE_FIRMWARE\" in"
+    print "        *[!A-Za-z0-9._+-]*|\"\") TIME r \"云端固件名含非法字符, 已中止升级\" ;;"
+    print "    esac"
+    print ""
+    done=1
+    next
+  }
+  { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+fi
+grep -q '2026-10-29: 下载前校验固件名' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 的下载前固件名校验未插入"; exit 1
+}
+echo "== 包内 AutoUpdate 已在下载前校验 REMOTE_FIRMWARE =="
+
+# 2026-10-29: 包内空间检查的两个字段可能为空(jq 失败/df 失败), 空值交给 [ ] 会报整数错误。
+# 这里给 defaults 0, 让后续检查 fail-closed 并给出明确提示; 同时把相对 tmp 路径改成绝对路径。
+if ! grep -q '2026-10-29: 下载前数值校验' "$AU_BIN"; then
+  grep -q 'SIZE=$(jq -r --arg rd "$RELEASE_DOWNLOAD"' "$AU_BIN" || {
+    echo "!! 包内 AutoUpdate 找不到 SIZE 赋值, 无法插入数值校验"; exit 1
+  }
+  awk '!done && /^        SIZE=\$\(jq -r --arg rd/ {
+    print
+    print "        # 2026-10-29: 下载前数值校验, jq 失败/字段缺失时不要把空值传给 bc"
+    print "        case \"${SIZE:-}\" in"
+    print "            \"\"|*[!0-9]*) SIZE=0 ;;"
+    print "        esac"
+    done=1
+    next
+  }
+  { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+
+  awk '!done && /^    TMP_AVAILABLE=\$\(df -m/ {
+    print
+    print "    # 2026-10-29: 下载前数值校验, df 失败时不要把空值传给 test"
+    print "    case \"${TMP_AVAILABLE:-}\" in"
+    print "        \"\"|*[!0-9]*) TMP_AVAILABLE=0 ;;"
+    print "    esac"
+    done=1
+    next
+  }
+  { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+
+  sed -i 's#rm -rf tmp/\*_version#rm -rf /tmp/*_version#; s#rm -rf "tmp/tags_version"#rm -rf "/tmp/tags_version"#' "$AU_BIN"
+fi
+grep -q '2026-10-29: 下载前数值校验' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 的数值校验未插入"; exit 1
+}
+grep -q 'rm -rf /tmp/\*_version' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 的临时路径仍是相对路径"; exit 1
+}
+echo "== 包内 AutoUpdate 已补空间字段校验和绝对 tmp 路径 =="
+
 # 2026-10-28: 包内脚本挑云端固件是 `grep -E "$regex" "$tmpapi_version" | tail -n 1`,
 #   同样依赖 GitHub 按上传顺序返回资产。手工补传一个旧版本做回滚时, 它会被选中,
 #   设备拿旧版本比较 → 走 -lt 分支 → cron 无人值守时 read 读到空输入直接 exit 0,

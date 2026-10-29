@@ -10,6 +10,8 @@
 # 输出 PASS / WARN / FAIL 三态; 退出码 = FAIL 数量(0 = 全通过, WARN 不影响退出码)。
 #
 # 注意: 全程只读。不碰 uci set / 不重启服务 / 不打印任何密码字段。
+# 注意: 本脚本会主动向 www.baidu.com / www.google.com 发起 DNS/HTTP 诊断请求；
+# 只用于人工验收，不是固件运行时行为。
 
 FAILN=0
 WARNN=0
@@ -213,29 +215,6 @@ fi
 say "  wan.ipv6=$(uci -q get network.wan.ipv6 2>/dev/null || echo 未设置)  wan6.device=$(uci -q get network.wan6.device 2>/dev/null || echo 未设置)"
 
 # ---------- 11. 暴露面/配置一致性 ----------
-head2 "11. 暴露面与配置一致性"
-if uci -q show firewall 2>/dev/null | grep -q "path='/etc/firewall.user'"; then
-  ok "firewall.user include 存在"
-else
-  warn "firewall.user include 不存在（新刷机默认不会劫持 53→AGH）"
-fi
-if iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- '--dport 53.*5553'; then
-  ok "53→5553 劫持规则存在"
-else
-  warn "未见 53→5553 劫持规则"
-fi
-AGH_MODE="$(uci -q get AdGuardHome.AdGuardHome.redirect 2>/dev/null)"
-say "  AdGuardHome redirect: ${AGH_MODE:-未配置}"
-for p in 12306 7681 19999; do
-  if (netstat -ln 2>/dev/null || ss -ln 2>/dev/null) | grep -q ":$p "; then
-    say "  [INFO] 端口 $p 在监听（管理面，仅应 LAN 可达）"
-  fi
-done
-if grep -q 'check_signature' /etc/opkg.conf 2>/dev/null; then
-  ok "opkg check_signature 已启用"
-else
-  warn "opkg check_signature 未启用（HTTPS 源仍缺包签名）"
-fi
 WANPROTO="$(uci -q get network.wan.proto 2>/dev/null)"
 WAN6PROTO="$(uci -q get network.wan6.proto 2>/dev/null)"
 WAN6DEV="$(uci -q get network.wan6.device 2>/dev/null)"

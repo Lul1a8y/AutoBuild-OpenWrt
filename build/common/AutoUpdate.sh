@@ -20,14 +20,15 @@ bash /bin/AutoUpdate.sh	-t			[执行测试模式(只运行,不安装,查看更�
 bash /bin/AutoUpdate.sh	-h			[列出帮助信息]
 ${White}"
 
-echo -e "${Purple}	
+echo -e "${Purple}
 ===============================================================================================
 ${White}"
 echo
 [[ -f /etc/CLOUD_Name ]] && {
 	export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | sort | tail -n 1)" > /dev/null 2>&1
 } || {
-	wget -q --timeout=30 --tries=2 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
+	wget -q --timeout=30 --tries=2 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1 || \
+	wget -q --timeout=30 --tries=2 ${Github_Tagstwo} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
 	export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)" > /dev/null 2>&1
 	[[ ! -f /etc/CLOUD_Name ]] && [[ ${CLOUD_Name} ]] && echo "${CLOUD_Name}" > /etc/CLOUD_Name
 }
@@ -61,7 +62,7 @@ Green="\033[0;92m"
 Purple="\033[1;95m"
 [ -f /bin/openwrt_info ] && {
 	chmod +x /bin/openwrt_info
-	source /bin/openwrt_info 
+	source /bin/openwrt_info
 } || {
 	echo -e "\n${Red}未检测到更新插件所需文件,无法运行更新程序!${White}"
 	echo
@@ -177,6 +178,8 @@ else
 		-f)
 			# 2026-10-24: 原来 case 里列了 -f 却没有分支, Upgrade_Options 为空,
 			# 最后变成直接执行 .img.gz 文件(bash: cannot execute binary file)。
+			# 2026-10-29: -f 的语义是强制更新, 同时跳过版本比较的交互询问。
+			export Force_Update=1
 			export Upgrade_Options="sysupgrade -F"
 			TIME h "执行: 强制更新固件(保留配置)"
 		;;
@@ -254,9 +257,13 @@ wget -q --timeout=30 --tries=1 ${Github_Tags} -O ${Download_Tags} > /dev/null 2>
 if [[ $? -ne 0 ]];then
 	wget -q --timeout=60 --tries=3 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
 	if [[ $? -ne 0 ]];then
-		TIME r "获取固件版本信息失败,请检测网络,或者您更改的Github地址为无效地址,或者您的仓库是私库,或者发布已被删除!"
-		echo
-		exit 1
+		TIME y "GitHub API 获取失败, 尝试 release 资产 Github_Tags..."
+		wget -q --timeout=60 --tries=3 ${Github_Tagstwo} -O ${Download_Tags} > /dev/null 2>&1
+		if [[ $? -ne 0 ]];then
+			TIME r "获取固件版本信息失败,请检测网络,或者您更改的Github地址为无效地址,或者您的仓库是私库,或者发布已被删除!"
+			echo
+			exit 1
+		fi
 	fi
 fi
 export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
@@ -288,7 +295,7 @@ else
 	TIME g "未能从 API 取得固件体积, 跳过 tmp 空间检查"
 fi
 echo -e "\n本地版本：${CURRENT_Ver}"
-echo "云端版本：${CLOUD_Version}"	
+echo "云端版本：${CLOUD_Version}"
 [[ "${TMP_Available}" -lt "${CLOUD_Firmware_Size}" ]] && {
 	TIME g "tmp 剩余空间: ${TMP_Available}M"
 	TIME r "tmp空间不足[${CLOUD_Firmware_Size}M],不够下载固件所需,请清理tmp空间或者增加运行内存!"
@@ -467,7 +474,8 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	# Lede 分支从来不生成。原来裸 source 一个不存在的文件在 ash 下会直接退出(rc=2),
 	# 等于手动升级通道在某些 shell 下静默失败; 加 [ -f ] 守卫, 存在才 source。
 	[ -f /etc/deletefile ] && . /etc/deletefile
-	cp -Rf /etc/config/network /mnt/network
+	# 2026-10-29: 不把 /etc/config/network 复制到 /mnt。
+	# sysupgrade -b 的配置备份本身包含 /etc/config/network; /mnt 副本既无用又会暴露 PPPoE 凭据。
 	# 2026-10-28: 这里原本先 `mv /etc/config/luci /etc/config/luci-` 再 sysupgrade -b。
 	#   打包那一刻 luci 已经被改名, 备份里根本没有 /etc/config/luci, 只多出一个 luci- 野文件;
 	#   紧接着 -f 用这份残缺 tar 顶替 sysupgrade 自己生成的完整备份, 于是每升一次级,
@@ -477,7 +485,8 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	#   原来失败兜底写的是 sysupgrade -q, 注释还说是"不保留配置" —— -q 只是静默, -n 才不保留配置。
 	#   这里改成裸 sysupgrade: 备份都做不出来时, 让 sysupgrade 用自己的自动备份并如实报错,
 	#   而不是假装配置已经被保住了。
-	if sysupgrade -b /tmp/back.tar.gz; then
+	if ( umask 077; sysupgrade -b /tmp/back.tar.gz ); then
+		chmod 600 /tmp/back.tar.gz 2>/dev/null || true
 		export Upgrade_Options="sysupgrade -f /tmp/back.tar.gz"
 	else
 		export Upgrade_Options="sysupgrade"

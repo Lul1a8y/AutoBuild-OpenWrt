@@ -34,6 +34,9 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id || github.event_name == 'schedule'
     # 2026-10-09: 冷编实测约 5h21m, GitHub 硬上限 6h → 显式 355min, 超时可控且日志有据
     timeout-minutes: 355
+    outputs:
+      regular_update: ${{ steps.publishmeta.outputs.regular_update }}
+      has_repo_token: ${{ steps.publishmeta.outputs.has_repo_token }}
 
     name: 编译 "${{matrix.target}}"
     strategy:
@@ -109,13 +112,19 @@ jobs:
         echo "Modelfile=${{matrix.target}}" >> $GITHUB_ENV
         # 2026-10-09: 由 secrets 计算一次供 if 条件使用(REPO_TOKEN 已从全局 env 移除)
         echo "HAS_REPO_TOKEN=${{ secrets.REPO_TOKEN != '' }}" >> $GITHUB_ENV
+        # 2026-10-29: 构建 job 只拿"是否配置"的布尔值, 不拿签名私钥本身;
+        # 私钥只在独立 sign job 中使用。
+        echo "HAS_SIGN_KEY=${{ secrets.FIRMWARE_SIGN_KEY_B64 != '' }}" >> $GITHUB_ENV
+    - name: 发布元数据
+      id: publishmeta
+      run: |
+        echo "regular_update=${REGULAR_UPDATE}" >> "$GITHUB_OUTPUT"
+        echo "has_repo_token=${HAS_REPO_TOKEN}" >> "$GITHUB_OUTPUT"
     - name: 检查签名密钥
-      env:
-        SIGN_KEY_B64: ${{ secrets.FIRMWARE_SIGN_KEY_B64 }}
       run: |
         # 2026-10-28: 未配置签名密钥时, 原来要等 5 小时编译完、到「云端更新1」才失败。
         # 这里提前到构建开始, 几秒内失败并指向 README。
-        if [ "${REGULAR_UPDATE}" = "true" ] && [ -z "${SIGN_KEY_B64}" ]; then
+        if [ "${REGULAR_UPDATE}" = "true" ] && [ "${HAS_SIGN_KEY}" != "true" ]; then
           echo "::error::REGULAR_UPDATE=true 但未配置 FIRMWARE_SIGN_KEY_B64"
           echo "::error::生成方法见 README.md 的「固件签名密钥」；不要提交私钥"
           exit 1
@@ -198,7 +207,7 @@ jobs:
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /${{matrix.target}}
         sudo chown $USER:$GROUPS /${{matrix.target}}
-    
+
     - name: 下载源码
       working-directory: /${{matrix.target}}
       run: |
@@ -210,7 +219,7 @@ jobs:
         ln -sf /${{matrix.target}}/openwrt $GITHUB_WORKSPACE/openwrt
         echo "Home=${GITHUB_WORKSPACE}/openwrt" >> $GITHUB_ENV
         echo "PATH1=${GITHUB_WORKSPACE}/openwrt/build/${{matrix.target}}" >> $GITHUB_ENV
- 
+
     - name: 加载设置
       env:
         # 2026-10-09: OpenClash 面板密码不再入库(public 仓库里明文=已泄露) —— 构建时注入:
@@ -299,18 +308,7 @@ jobs:
         # 2026-10-28: 在编译前把源码快照固定下来并上传 artifact。
         # 这样即使编译阶段的 Makefile 被上游注入, 事后也能核对"当时到底用了哪些 commit";
         # 不改变"每次跟上游最新"的行为, 只是把快照变成不可被构建阶段改写的副本。
-        cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt"
         cat "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt"
-
-    - name: 上传源码快照
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-      with:
-        name: build-source-${{ env.Compile_Date }}
-        path: |
-          BUILD_SOURCE.txt
-          SOURCE_LOCK.txt
-        if-no-files-found: error
-        retention-days: 30
 
     - name: 生成配置
       run: |
@@ -386,6 +384,18 @@ jobs:
         else
           echo "TARGET_PROFILE=armvirt" >> $GITHUB_ENV
         fi
+        cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt"
+
+    - name: 上传源码快照
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: build-source-${{ env.Compile_Date }}
+        path: |
+          BUILD_SOURCE.txt
+          SOURCE_LOCK.txt
+        if-no-files-found: error
+        retention-days: 30
+
     - name: 编译信息
       run: |
         cd openwrt
@@ -429,7 +439,7 @@ jobs:
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target)) }}
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target), 'scripts/**', '.github/workflows/**') }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-openwrt-
 
@@ -453,7 +463,14 @@ jobs:
         # 保证「key 变 ⇔ 指纹变」两者不会脱节。
         SRC_DIR="${GITHUB_WORKSPACE}/build/${{ matrix.target }}"
         if [ -f "${SRC_DIR}/.config" ] && [ -f "${SRC_DIR}/settings.ini" ]; then
-          CACHE_FP="$( { cat "${SRC_DIR}/.config"; cat "${SRC_DIR}/settings.ini"; } | sha256sum | awk '{print $1}')"
+          CACHE_FP="$(
+            {
+              cat "${SRC_DIR}/.config"
+              cat "${SRC_DIR}/settings.ini"
+              find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.github/workflows" -type f -print0 2>/dev/null \
+                | sort -z | xargs -0 sha256sum
+            } | sha256sum | awk '{print $1}'
+          )"
         else
           CACHE_FP="unknown"
           echo "::warning::指纹输入缺失(config=$([ -f "${SRC_DIR}/.config" ] && echo 有 || echo 无) settings=$([ -f "${SRC_DIR}/settings.ini" ] && echo 有 || echo 无)) → 记 unknown"
@@ -565,7 +582,7 @@ jobs:
         echo "status=success" >> $GITHUB_ENV
         echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
         echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
-        
+
     - name: 构建产物自检
       if: env.status == 'success'
       run: |
@@ -695,8 +712,8 @@ jobs:
       with:
         name: filename+ipk_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
         path: openwrt/bin
-        if-no-files-found: error            
-    
+        if-no-files-found: error
+
     - name: 整理文件
       id: organizer
       run: |
@@ -729,7 +746,7 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "BOT=TRUE" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_ENV
-        
+
     - name: 上传固件
       # 2026-10-20: FIRMWARE 只在「整理文件」最后写入; 若该步中途失败而 status 仍为 success,
       # 原条件会让 env.FIRMWARE 展开成空 → path 变成以 / 开头的相对路径(行为不可预期)。补存在性判断。
@@ -784,11 +801,9 @@ jobs:
         # 任一资产上传失败只打 warning, 于是线上留下空/半空 release 而 CI 是绿的。
         # 设为 true 后上传出问题直接让步骤失败, 失败日志也会被归档。
         artifactErrorsFailBuild: true
-        
-    - name: 云端更新1
+
+    - name: 准备 AutoUpdate 固件
       if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
-      env:
-        SIGN_KEY_B64: ${{ secrets.FIRMWARE_SIGN_KEY_B64 }}
       run: |
        cd openwrt
        source "${PATH1}/upgrade.sh" && Diy_Part3
@@ -812,70 +827,18 @@ jobs:
        [ -s sha256sums ] || { echo "::error::sha256sums 未生成"; exit 1; }
        sha256sum -c sha256sums --quiet || { echo "::error::sha256sums 自检失败"; exit 1; }
        echo "== sha256sums 已生成(最终文件名, $(wc -l < sha256sums) 项) =="
-       # 2026-10-21: 用 Ed25519 给校验清单签名(<固件>.sha256.sig), 公钥随固件分发到 /etc/firmware-signing.pub
-       # 设备端先验签名再比 SHA256: 没签名或签名不对的发布会被直接拒绝, 不再只看 HTTPS
-       if [ -z "${SIGN_KEY_B64}" ]; then
-         echo "::error::未配置 FIRMWARE_SIGN_KEY_B64, 拒绝发布无签名固件"
-         echo "::error::否则刷了新固件的设备会拒收这次发布; 生成方法见 build/Lede_source/files/etc/firmware-signing.pub 旁说明"
-         exit 1
-       fi
-       printf '%s' "${SIGN_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/fw-signing.pem"
-       chmod 600 "${RUNNER_TEMP}/fw-signing.pem"
-       rc=0
-       n=0
-       for f in *.sha256; do
-         [ -f "$f" ] || continue
-         openssl pkeyutl -sign -rawin -inkey "${RUNNER_TEMP}/fw-signing.pem" -in "$f" -out "$f.sig" || rc=1
-         # 2026-10-22: 签完立刻用"随固件分发的公钥"回验一次。secret 轮换后忘了换公钥时,
-         # 这里就会红 —— 否则会发布一批所有设备都拒收的固件(只能手动刷机救)。
-         openssl pkeyutl -verify -pubin -inkey "${GITHUB_WORKSPACE}/build/Lede_source/files/etc/firmware-signing.pub" \
-           -rawin -in "$f" -sigfile "$f.sig" >/dev/null 2>&1 || { echo "::error::私钥与仓库内公钥不配对: $f"; rc=1; }
-         n=$((n + 1))
-       done
-       rm -f "${RUNNER_TEMP}/fw-signing.pem"
-       # 2026-10-22: 空集 fail-open —— 没有 *.sha256 时上面循环一次都不进, rc 仍是 0。
-       [ "${n}" -gt 0 ] || { echo "::error::没有生成任何 .sha256, 无从签名, 中止发布"; exit 1; }
-       [ "${rc}" -eq 0 ] || { echo "::error::固件签名生成失败, 中止发布"; exit 1; }
+       # 2026-10-29: 签名移到独立 job。构建 job 只准备待签名的 .sha256, 不持有私钥。
+       [ -s "$(ls *.sha256 2>/dev/null | head -1)" ] || { echo "::error::没有生成任何 .sha256, 无法进入签名 job"; exit 1; }
        ls -l
-        
-    - name: 云端更新2
-      if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.HAS_REPO_TOKEN == 'true'
-      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
-      with:
-        repo_token: ${{ secrets.REPO_TOKEN }}
-        file: openwrt/bin/Firmware/*
-        # 2026-10-21 已合并回 main: 发布通道恢复生产 AutoUpdate(测试分支要改回 AutoUpdate-618-test)
-        tag: AutoUpdate
-        overwrite: true
-        file_glob: true
-        
-    - name: 云端更新3
+
+    - name: 上传待签名固件
       if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
-      run: |
-        mkdir -p Github_Tags
-        cd Github_Tags
-        # 2026-10-09: 先按严格 TLS 取, 失败才回退 --no-check-certificate 并显式告警(不再默认跳过证书校验)
-        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags; then
-          echo "::warning::GitHub API 严格 TLS 拉取失败, 回退 --no-check-certificate 重试"
-          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
-        fi
-        [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
-        # 2026-10-22: 设备端 /usr/bin/AutoUpdate(luci-app-autoupdate 包内) 固定读
-        # <release>/zzz_api, 而本工作流一直只上传 Github_Tags —— 名字对不上,
-        # 于是"检查更新/一键升级"必然报 获取API数据失败。同一份 JSON 两个名字各传一份。
-        cp -f Github_Tags zzz_api
-        grep -q '"assets"' zzz_api || { echo "!! zzz_api 内容不是 release JSON"; exit 1; }
-        
-    - name: 云端更新4
-      if: env.status == 'success' && env.REGULAR_UPDATE == 'true' && env.HAS_REPO_TOKEN == 'true'
-      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
-        repo_token: ${{ secrets.REPO_TOKEN }}
-        file: Github_Tags/*
-        # 2026-10-21 已合并回 main: 同上, 写生产通道
-        tag: AutoUpdate
-        overwrite: true
-        file_glob: true
+        name: autoupdate-input
+        path: openwrt/bin/Firmware
+        if-no-files-found: error
+        retention-days: 1
 
     - name: 电报通知
       if: env.status == 'success' && env.SERVERCHAN_SCKEY == 'true'
@@ -935,3 +898,117 @@ jobs:
         path: fail-diag
         if-no-files-found: warn
         retention-days: 14
+  # 2026-10-29: 签名从 build job 拆出。build job 不持有 FIRMWARE_SIGN_KEY_B64；
+  # sign job 在新 runner 上只处理 artifact，不执行构建树里的脚本。
+  sign:
+    needs: build
+    if: needs.build.outputs.regular_update == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+    - name: 准备结束
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+    - name: 下载待签名固件
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: autoupdate-input
+        path: fw
+
+    - name: 签名并回验
+      env:
+        SIGN_KEY_B64: ${{ secrets.FIRMWARE_SIGN_KEY_B64 }}
+      run: |
+        set -euo pipefail
+        cd fw
+        [ -n "${SIGN_KEY_B64}" ] || { echo "::error::未配置 FIRMWARE_SIGN_KEY_B64"; exit 1; }
+        [ -s sha256sums ] || { echo "::error::缺少 sha256sums"; exit 1; }
+        sha256sum -c sha256sums --quiet || { echo "::error::待签名固件 sha256sums 校验失败"; exit 1; }
+        ls *.sha256 >/dev/null 2>&1 || { echo "::error::没有 *.sha256 清单"; exit 1; }
+
+        umask 077
+        printf '%s' "${SIGN_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/fw-signing.pem"
+        chmod 600 "${RUNNER_TEMP}/fw-signing.pem"
+        trap 'rm -f "${RUNNER_TEMP}/fw-signing.pem"' EXIT
+
+        n=0
+        for f in *.sha256; do
+          [ -f "$f" ] || continue
+          openssl pkeyutl -sign -rawin -inkey "${RUNNER_TEMP}/fw-signing.pem" -in "$f" -out "$f.sig"
+          openssl pkeyutl -verify -pubin \
+            -inkey "${GITHUB_WORKSPACE}/build/Lede_source/files/etc/firmware-signing.pub" \
+            -rawin -in "$f" -sigfile "$f.sig" >/dev/null
+          n=$((n + 1))
+        done
+        [ "${n}" -gt 0 ] || { echo "::error::没有生成任何 .sha256.sig"; exit 1; }
+        ls -l
+
+    - name: 上传签名产物
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: autoupdate-signed
+        path: fw
+        if-no-files-found: error
+        retention-days: 1
+
+  publish:
+    needs: [build, sign]
+    if: needs.sign.result == 'success' && needs.build.outputs.has_repo_token == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+    - name: 下载签名产物
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: autoupdate-signed
+        path: signed
+
+    - name: 发布前校验
+      run: |
+        set -euo pipefail
+        cd signed
+        [ -s sha256sums ] || { echo "::error::缺少 sha256sums"; exit 1; }
+        sha256sum -c sha256sums --quiet
+        ls *.sha256.sig >/dev/null 2>&1 || { echo "::error::缺少 .sha256.sig"; exit 1; }
+
+    - name: 云端更新2
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+      with:
+        repo_token: ${{ secrets.REPO_TOKEN }}
+        file: signed/*
+        # 2026-10-21 已合并回 main: 发布通道恢复生产 AutoUpdate(测试分支要改回 AutoUpdate-618-test)
+        tag: AutoUpdate
+        overwrite: true
+        file_glob: true
+
+    - name: 云端更新3
+      run: |
+        mkdir -p Github_Tags
+        cd Github_Tags
+        # 2026-10-09: 先按严格 TLS 取, 失败才回退 --no-check-certificate 并显式告警(不再默认跳过证书校验)
+        if ! wget -q --no-cookie --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags; then
+          echo "::warning::GitHub API 严格 TLS 拉取失败, 回退 --no-check-certificate 重试"
+          wget -q --no-cookie --no-check-certificate --timeout=30 --tries=2 https://api.github.com/repos/${{github.repository}}/releases/tags/AutoUpdate -O Github_Tags
+        fi
+        [ -s Github_Tags ] || { echo "!! Github_Tags 为空, 设备端更新通道会读不到版本信息"; exit 1; }
+        # 2026-10-22: 设备端 /usr/bin/AutoUpdate(luci-app-autoupdate 包内) 固定读
+        # <release>/zzz_api, 而本工作流一直只上传 Github_Tags —— 名字对不上,
+        # 于是"检查更新/一键升级"必然报 获取API数据失败。同一份 JSON 两个名字各传一份。
+        cp -f Github_Tags zzz_api
+        grep -q '"assets"' zzz_api || { echo "!! zzz_api 内容不是 release JSON"; exit 1; }
+
+    - name: 云端更新4
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+      with:
+        repo_token: ${{ secrets.REPO_TOKEN }}
+        file: Github_Tags/*
+        # 2026-10-21 已合并回 main: 同上, 写生产通道
+        tag: AutoUpdate
+        overwrite: true
+        file_glob: true

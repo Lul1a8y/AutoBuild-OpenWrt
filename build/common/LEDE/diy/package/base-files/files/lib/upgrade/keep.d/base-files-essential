@@ -9,7 +9,6 @@
 /etc/shinit
 /etc/sysctl.conf
 /etc/rc.local
-/mnt/network
 /etc/docker/daemon.json
 /etc/docker/key.json
 # 2026-10-27: 原来写的是 /etc/config/AdGuardHome.yaml —— 该路径在设备上并不存在, 等于没保留。
