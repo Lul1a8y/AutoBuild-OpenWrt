@@ -983,7 +983,9 @@ jobs:
 
   publish:
     needs: [build, sign]
-    if: needs.sign.result == 'success' && needs.build.outputs.has_repo_token == 'true'
+    # 2026-10-29: 只允许 main 写生产 AutoUpdate; 测试分支(review-fixes-3 等)只构建/签名,
+    # 避免一次测试构建覆盖生产 release。测试发布请在 fork 或临时改 tag 后验证。
+    if: needs.sign.result == 'success' && needs.build.outputs.has_repo_token == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
