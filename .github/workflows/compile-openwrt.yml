@@ -339,6 +339,15 @@ jobs:
         source "${PATH1}/common.sh" && Diy_chajian > /dev/null 2>&1
         # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
         make defconfig || { echo "!! make defconfig 失败"; exit 1; }
+        # 2026-10-29: 必须同时产出 BIOS(Legacy combined) 和 EFI 镜像。
+        # 之前只设 CONFIG_GRUB_TITLE, 没设 CONFIG_GRUB_IMAGES, defconfig 默认 n,
+        # 结果 release/AutoUpdate 里只有 combined-efi; BIOS 机器无法刷/OTA。
+        for s in CONFIG_GRUB_IMAGES CONFIG_GRUB_EFI_IMAGES; do
+          grep -q "^${s}=y$" .config || {
+            echo "!! ${s} 未出现在最终 .config(=y) —— Legacy/EFI 镜像配置被 defconfig 丢弃"
+            exit 1
+          }
+        done
         # 2026-10-21: 防"包被静默跳过"。buildroot 只收录 Makefile 里含 "call BuildPackage"
         # 字样的包(include/scan.mk), 缺了就不进 tmp/.packageinfo, .config 写 =y 也没用、
         # 不报错、固件里就是没有 —— 10-20 那版 ADH 就是这么消失的。
@@ -768,7 +777,10 @@ jobs:
           echo "== sha256sums 已按最终文件名重算 =="
         fi
         # 2026-10-17: rename 之后再确认一次(发布/上传都用通配, 空目录也会"成功")
-        ls *combined*.img.gz >/dev/null 2>&1 || { echo "!! rename 后未找到 combined 镜像"; ls -l | head -20; exit 1; }
+        # 2026-10-29: 分别断言 BIOS(Legacy) 和 EFI 镜像, 不能再用 *combined*.img.gz
+        # 让只有 EFI 的情况混过去。
+        ls *combined.img.gz >/dev/null 2>&1 || { echo "!! rename 后未找到 Legacy combined 镜像"; ls -l | head -20; exit 1; }
+        ls *combined-efi.img.gz >/dev/null 2>&1 || { echo "!! rename 后未找到 combined-efi 镜像"; ls -l | head -20; exit 1; }
         [ "$(ls -1 | wc -l)" -ge 2 ] || { echo "!! 发布目录资产少于 2 个"; exit 1; }
         [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
         [ -f "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" ] && cp "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" .
