@@ -96,6 +96,14 @@ jobs:
             BAD_INI=1
           fi
         done
+        # 2026-10-29: REPO_COMMIT 允许为空(跟随分支), 非空时必须是 40 位 hex;
+        # 放在这里与其它 settings.ini 值一起校验, 不只依赖下载步骤里的检查。
+        if [ -n "${REPO_COMMIT:-}" ]; then
+          if [ "${#REPO_COMMIT}" -ne 40 ] || [[ ! "$REPO_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "!! settings.ini: REPO_COMMIT=『${REPO_COMMIT}』不是 40 位十六进制 SHA"
+            BAD_INI=1
+          fi
+        fi
         [ "$BAD_INI" = "0" ] || { echo "!! settings.ini 值格式非法, 中止"; exit 1; }
         echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
         echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
@@ -765,7 +773,7 @@ jobs:
         [ -f "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" ] && cp "${GITHUB_WORKSPACE}/BUILD_SOURCE.txt" .
         [ -f "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" ] && cp "${GITHUB_WORKSPACE}/SOURCE_LOCK.txt" .
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "firmware_date=${date}" >> "$GITHUB_OUTPUT"
+        echo "firmware_date=${Compile_Date}" >> "$GITHUB_OUTPUT"
         echo "ota_enabled=${REGULAR_UPDATE}" >> "$GITHUB_OUTPUT"
         echo "BOT=TRUE" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_ENV
@@ -929,7 +937,8 @@ jobs:
   # sign job 在新 runner 上只处理 artifact，不执行构建树里的脚本。
   sign:
     needs: build
-    if: needs.build.outputs.ota_enabled == 'true'
+    # 2026-10-29: 签名私钥只在 main 使用; 测试分支只构建, 不碰生产私钥。
+    if: needs.build.outputs.ota_enabled == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
@@ -1021,7 +1030,10 @@ jobs:
           printf '  "assets": [\n'
           first=1
           for f in *; do
-            case "$f" in versions.json|sha256sums|*.sig) continue ;; esac
+            case "$f" in
+              *.img.gz|*.bin|*.trx) ;;
+              *) continue ;;
+            esac
             [ -f "$f" ] || continue
             [ "${first}" -eq 1 ] || printf ',\n'
             first=0
@@ -1033,6 +1045,18 @@ jobs:
         jq empty versions.json
         echo "== versions.json 已生成: $(wc -c < versions.json) bytes =="
 
+    - name: 发布可回滚日期 tag
+      # 2026-10-29: 先发日期 tag, 再更新生产 AutoUpdate。
+      # 反过来的话, 日期 tag 上传失败会让 publish 变红, 但生产 tag 已经更新,
+      # 出现"失败但已发布"的不一致; 先日期 tag 最多留下一个可回滚快照, 生产不动。
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+      with:
+        repo_token: ${{ secrets.REPO_TOKEN }}
+        file: signed/*
+        tag: AutoUpdate-${{ needs.build.outputs.firmware_date }}
+        overwrite: false
+        file_glob: true
+
     - name: 云端更新2
       uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
       with:
@@ -1041,17 +1065,6 @@ jobs:
         # 2026-10-21 已合并回 main: 发布通道恢复生产 AutoUpdate(测试分支要改回 AutoUpdate-618-test)
         tag: AutoUpdate
         overwrite: true
-        file_glob: true
-
-    - name: 发布可回滚日期 tag
-      # 2026-10-29: 生产 AutoUpdate tag 仍覆盖式更新; 同一批签名资产再发一份到
-      # AutoUpdate-<编译时间>, 手工回滚时可按日期 tag 找旧固件, 不必只依赖资产名排序。
-      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
-      with:
-        repo_token: ${{ secrets.REPO_TOKEN }}
-        file: signed/*
-        tag: AutoUpdate-${{ needs.build.outputs.firmware_date }}
-        overwrite: false
         file_glob: true
 
     - name: 云端更新3
@@ -1079,3 +1092,29 @@ jobs:
         tag: AutoUpdate
         overwrite: true
         file_glob: true
+
+    - name: 清理 AutoUpdate 旧固件
+      # 2026-10-29: AutoUpdate 是覆盖式 tag, 资产只增不减; 当前 48 个镜像约 11GB,
+      # 按一天多次构建会撞 GitHub 单 release 1000 资产上限。只保留最新 30 个
+      # *.img.gz 及其 .sha256/.sha256.sig; 日期 tag 已保存每次构建, 回滚仍可用。
+      # 清理失败不把 publish 标红(生产 tag 已经更新), 只告警。
+      continue-on-error: true
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+      run: |
+        set -euo pipefail
+        API="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/AutoUpdate"
+        curl -fsSL -H "Authorization: Bearer ${REPO_TOKEN}" -H "Accept: application/vnd.github+json" "$API" -o /tmp/au-assets.json
+        jq -r '.assets[] | select(.name | test("\\.img\\.gz$")) | [.created_at, .id, .name] | @tsv' /tmp/au-assets.json \
+          | sort -r | tail -n +31 | while IFS=$'\t' read -r _ _ name; do
+            [ -n "$name" ] || continue
+            for suffix in "" ".sha256" ".sha256.sig"; do
+              asset_name="${name}${suffix}"
+              asset_id="$(jq -r --arg n "$asset_name" '.assets[] | select(.name == $n) | .id' /tmp/au-assets.json | head -1)"
+              [ -n "$asset_id" ] || continue
+              curl -fsSL -X DELETE -H "Authorization: Bearer ${REPO_TOKEN}" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null \
+                && echo "== 已删除旧资产: ${asset_name}" \
+                || echo "::warning::删除旧资产失败: ${asset_name}"
+            done
+          done
