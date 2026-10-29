@@ -244,6 +244,10 @@ jobs:
         OC_PASS_SECRET: ${{ secrets.OPENCLASH_DASH_PASS }}
       run: |
         echo "Compile_Date=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+        # 2026-10-30: date/date1 也改为编译开始时生成, 与 Compile_Date、固件名保持同一时间基准;
+        # 原先在编译结束后生成, normal release tag 会比固件名时间戳晚数小时。
+        echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
+        echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
         OC_CFG="${GITHUB_WORKSPACE}/build/${{matrix.target}}/files/etc/config/openclash"
         if [ -f "$OC_CFG" ]; then
           if [ -n "$OC_PASS_SECRET" ]; then
@@ -618,8 +622,6 @@ jobs:
         # 2026-10-17: 指纹写进 staging_dir(随缓存一起保存), 供下次 restore-keys 部分命中时比对
         echo "${CACHE_FP}" > staging_dir/.hermes-build-fingerprint
         echo "status=success" >> $GITHUB_ENV
-        echo "date=$(date "+%Y%m%d%H%M%S")" >> $GITHUB_ENV
-        echo "date1=$(date +'%m-%d')" >> $GITHUB_ENV
 
     - name: 构建产物自检
       if: env.status == 'success'
