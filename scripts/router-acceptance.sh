@@ -134,6 +134,8 @@ fi
 head2 "7. DNS 链 (dnsmasq:53 → AGH → mosdns:5335)"
 L53="$( (netstat -ln 2>/dev/null || ss -ln 2>/dev/null) | grep -c ':53 ' )"
 [ "$L53" -ge 1 ] && ok "53 端口有监听(dnsmasq 门面)" || bad "53 无监听 —— DNS 全断"
+L5553="$( (netstat -lnu 2>/dev/null; netstat -lnt 2>/dev/null; ss -lnu 2>/dev/null; ss -lnt 2>/dev/null) | grep -c ':5553 ' )"
+[ "$L5553" -ge 1 ] && ok "5553 端口有监听(AGH)" || warn "5553 无监听(AGH 未启动或端口已改)"
 ADDM="$(uci -q get dhcp.@dnsmasq[0].addnmount 2>/dev/null)"
 if [ -n "$ADDM" ]; then
   if [ -d "$ADDM" ]; then ok "addnmount 目录存在: $ADDM"
@@ -195,10 +197,13 @@ if uci -q show firewall 2>/dev/null | grep -q "path='/etc/firewall.user'"; then
 else
   warn "firewall.user 的 fw4 include 不存在(新刷机 DNS 劫持不会生效)"
 fi
-if iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- '--dport 53.*5553'; then
-  ok "LAN 53→5553 劫持规则存在"
+R4="$(iptables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
+R6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
+if pgrep -f AdGuardHome >/dev/null 2>&1; then
+  [ -n "$R4" ] && ok "LAN IPv4 53→5553 劫持规则存在" || warn "AGH 在跑但未见 IPv4 53→5553 劫持规则"
+  [ -n "$R6" ] && ok "LAN IPv6 53→5553 劫持规则存在" || warn "AGH 在跑但未见 IPv6 53→5553 劫持规则"
 else
-  warn "未见 53→5553 劫持规则"
+  [ -z "$R4$R6" ] && ok "AGH 未运行且无残留 DNS 重定向" || bad "AGH 未运行但 DNS 重定向仍存在(客户端可能断 DNS)"
 fi
 ADH_REDIRECT="$(uci -q get AdGuardHome.AdGuardHome.redirect 2>/dev/null)"
 say "  AdGuardHome.redirect=${ADH_REDIRECT:-未配置}"

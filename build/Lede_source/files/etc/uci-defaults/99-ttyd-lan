@@ -1,22 +1,17 @@
 #!/bin/sh
-# 2026-10-23: ttyd 保持 LAN 监听, 登录由 /bin/login 把关(与上游默认一致)。
-#
-# 说明: 这个文件只做一件事 —— 如果 uci 里 interface 被改成了 127.0.0.1, 改回 @lan。
-# 起因: 我曾把 ttyd 改成只绑回环(想减少 LAN 暴露), 结果电脑浏览器点 LuCI 的「终端」
-# 就连不上; 而本包的 ttyd 没有 TLS 支持(带 -S 启动直接 rc=1, 实测), 加不了 https。
-# 结论: 维持上游默认(192.168.50.2:7681 + /bin/login), 不设 HTTP Basic Auth ——
-# 打开页面只是看到 login 提示, 没有 root 口令照样登不进去。
-# 若以后想收紧: uci set ttyd.@ttyd[0].interface='127.0.0.1', 从电脑用
-#   ssh -L 7681:127.0.0.1:7681 -p 12306 root@192.168.50.2
+# 2026-10-30: 只补默认值, 不再覆盖用户显式设置的 interface。
+# 旧逻辑会把用户改成的 127.0.0.1 强制改回 @lan, 导致“想只绑回环”的设置每次升级失效。
+# 需要 LAN 访问时默认仍是 @lan + /bin/login; 想收紧就自己设 127.0.0.1 并用 SSH 隧道。
+# 说明: 本包 ttyd 没有 TLS 支持(带 -S 启动直接 rc=1), 不要用 HTTP Basic 当成加密。
 
 [ -f /etc/config/ttyd ] || exit 0
 
 cur="$(uci -q get ttyd.@ttyd[0].interface)"
-[ "${cur}" = "127.0.0.1" ] || exit 0
-
-uci -q set ttyd.@ttyd[0].interface='@lan'
-uci -q commit ttyd
-/etc/init.d/ttyd restart >/dev/null 2>&1
-logger -t ttyd-defaults "ttyd 由 127.0.0.1 改回 @lan(登录仍由 /bin/login 把关)"
+if [ -z "${cur}" ]; then
+	uci -q set ttyd.@ttyd[0].interface='@lan'
+	uci -q commit ttyd
+	/etc/init.d/ttyd restart >/dev/null 2>&1
+	logger -t ttyd-defaults "ttyd interface 未设置, 默认使用 @lan(登录仍由 /bin/login 把关)"
+fi
 
 exit 0

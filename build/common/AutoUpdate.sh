@@ -511,7 +511,24 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	fi
 fi
 
-${Upgrade_Options} ${Firmware}
+# 2026-10-30: 正常升级先做兼容性检查; 只有显式 -f/-s 的强制路径才跳过。
+case "${Upgrade_Options}" in
+	*" -F"*) : ;;
+	*)
+		if ! sysupgrade -T "${Firmware}"; then
+			echo "镜像兼容性检查失败(sysupgrade -T), 已中止; 如确认强制刷机请手动执行 sysupgrade -F" >&2
+			exit 1
+		fi
+		;;
+esac
+# 2026-10-30: 传递 sysupgrade 的真实退出码; 原来无论成功失败都 exit 0,
+# 定时任务/上层界面会把失败当成功。
+${Upgrade_Options} "${Firmware}"
+RC=$?
+if [ "${RC}" -ne 0 ]; then
+	echo "升级命令失败, rc=${RC}: ${Upgrade_Options} ${Firmware}" >&2
+	exit "${RC}"
+fi
 
 exit 0
 

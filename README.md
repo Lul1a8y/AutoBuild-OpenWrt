@@ -16,6 +16,8 @@
 
 > 默认命令会保留 `/etc/config`（LAN、PPPoE、ADH 等）；`-n` 不保留，适合全新安装或配置已损坏时。
 >
+> 普通 OTA 升级会先执行 `sysupgrade -T` 检查镜像兼容性，失败会中止；`sysupgrade -F` 只保留给明确的手动强制刷机。
+>
 > `AutoUpdate.sh -g` 的旧通道转换菜单（18.06 / 19.07 / 21.02）已停用；这些通道均已 EOL，请手动刷入当前固件。
 
 **注意：LuCI 23.05 与旧版 18.06 不兼容，不能保留配置升级，建议全新安装后重新设置**
@@ -120,7 +122,7 @@ OpenClash / PassWall / SSR-Plus / AdGuard Home / mosdns / OpenList(文件管理,
 
 > AdGuard Home 默认只装 `luci-app-adguardhome` 壳，**不打包核心**。刷完固件后在 LuCI 页面点“更新核心”下载，或手动放入 `/usr/bin/AdGuardHome`；`/etc/AdGuardHome.yaml` 和已下载的核心会被 `keep.d` 保留，升级后还原设置即可。
 >
-> 只有核心存在（`/usr/bin/AdGuardHome` 或 `/etc/AdGuardHome/AdGuardHome`）且 `/etc/init.d/AdGuardHome` 已 enable 时，`firewall.user` 才会把 LAN 53 劫持到 5553；没有核心时 DNS 仍走 dnsmasq，不会断网。
+> 只有核心存在（`/usr/bin/AdGuardHome` 或 `/etc/AdGuardHome/AdGuardHome`）、服务已 enable、进程存活且配置端口（默认 5553）在监听时，`firewall.user` 才会把 LAN 53 劫持到该端口；否则会先清掉旧重定向并回退 dnsmasq，不会断网。
 >
 > OpenClash 的 `clash_meta` 是仓库内置的 x86-64 静态内核，**不会随 OpenClash 上游自动更新**；升级时需同时替换二进制并更新 `build/common/post-feeds.sh` 的 `CLASH_SHA`。
 

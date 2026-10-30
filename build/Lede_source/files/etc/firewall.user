@@ -2,7 +2,7 @@
 # Custom commands run after the default rules on every firewall restart.
 # The inet fw4 table is recreated on reload, this one is not.
 
-# 2026-10-21: 把 LAN 的 53 统一劫持到 AdGuardHome(127.0.0.1:5553)。
+# 2026-10-21: 把 LAN 的 53 统一劫持到 AdGuardHome。
 # 目的: 在 ADH 的查询日志里看到真实客户端 IP —— 若客户端经 dnsmasq 转发,
 # ADH 只会看到源地址 127.0.0.1, 无法区分是哪台设备在查什么。
 # 代价: 客户端绕过 dnsmasq, passwall 写在 dnsmasq 里的按域名分流/ipset 注入
@@ -11,50 +11,78 @@
 # 写法说明: 本文件在每次 fw4 reload 都会被执行一遍。裸 `iptables -A` 会让规则
 # 一份份叠加(2026-10-21 现场已叠到 3 份, 只有第一份收包, 其余纯占位),
 # 所以这里用「先删干净再加一条」, 重复执行结果恒定。
-# 2026-10-23: 加 -i br-lan。原写法不限入接口, WAN 侧到 53 的包也会被 DNAT 到 5553,
-# 计数器里混着公网扫描流量(实测 udp 2451 个包里大部分来自 WAN), 既污染统计, 也让
-# "劫持的是 LAN 客户端"这个前提在报文层面不成立。加 -i br-lan 后语义与注释一致。
-# 2026-10-29: 抽成函数, 同时处理 IPv4/IPv6; AGH 当前监听 :::5553。
+# 2026-10-23: 加 -i br-lan。原写法不限入接口, WAN 侧到 53 的包也会被 DNAT 到
+# 5553, 计数器里混着公网扫描流量(实测 udp 2451 个包里大部分来自 WAN), 既污染统计,
+# 也让 "劫持的是 LAN 客户端" 这个前提在报文层面不成立。加 -i br-lan 后语义与注释一致。
+# 2026-10-30: 清理和添加分开:
+#   - 无论 AGH 是否可用，都先删除本脚本管理的旧规则；否则停用/删除 AGH 后，
+#     规则会残留在 nat 表里，客户端继续被送到无人监听的 5553。
+#   - 端口从 /etc/AdGuardHome.yaml 读取，读不到才回退 5553。
+#   - 只有核心存在、服务 enable、进程存活且端口在监听时才添加规则；
+#     否则回退 dnsmasq，避免 DNS 全断。
 
-redirect_dns() {
+AGH_PORT="$(awk '/^dns:/{f=1;next} f && /^[[:space:]]+port:/{print $2; exit}' /etc/AdGuardHome.yaml 2>/dev/null)"
+case "${AGH_PORT:-}" in
+	''|*[!0-9]*) AGH_PORT=5553 ;;
+esac
+
+dns_rule_delete() {
 	_ipt="$1"
 	for _p in udp tcp; do
-		while "$_ipt" -t nat -C PREROUTING -i br-lan -p "$_p" \
-			--dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
-			"$_ipt" -t nat -D PREROUTING -i br-lan -p "$_p" \
-				--dport 53 -j REDIRECT --to-ports 5553 || break
+		# 同时清掉旧版本写死的 5553，防止改端口后残留。
+		for _port in "${AGH_PORT}" 5553; do
+			while "$_ipt" -t nat -C PREROUTING -i br-lan -p "$_p" \
+				--dport 53 -j REDIRECT --to-ports "$_port" 2>/dev/null; do
+				"$_ipt" -t nat -D PREROUTING -i br-lan -p "$_p" \
+					--dport 53 -j REDIRECT --to-ports "$_port" || break
+			done
 		done
+	done
+}
+
+dns_rule_add() {
+	_ipt="$1"
+	for _p in udp tcp; do
 		if ! "$_ipt" -t nat -A PREROUTING -i br-lan -p "$_p" \
-			--dport 53 -j REDIRECT --to-ports 5553; then
-			logger -t firewall.user "DNS redirect add failed: $_ipt $_p" 2>/dev/null || true
+			--dport 53 -j REDIRECT --to-ports "${AGH_PORT}"; then
+			logger -t firewall.user "DNS redirect add failed: $_ipt $_p -> ${AGH_PORT}" 2>/dev/null || true
 		fi
 	done
 }
 
-# 2026-10-30: 只有 AdGuardHome 核心存在且服务已启用时才劫持 53 -> 5553。
-# 仓库默认只编 LuCI 壳子、不编 AGH 核心; 无条件劫持会让没有核心的机器 DNS 全断。
 agh_available() {
 	{ [ -x /usr/bin/AdGuardHome ] || [ -x /etc/AdGuardHome/AdGuardHome ]; } || return 1
 	[ -x /etc/init.d/AdGuardHome ] || return 1
-	/etc/init.d/AdGuardHome enabled >/dev/null 2>&1
+	/etc/init.d/AdGuardHome enabled >/dev/null 2>&1 || return 1
+	pgrep -f AdGuardHome >/dev/null 2>&1 || return 1
+	if command -v netstat >/dev/null 2>&1; then
+		netstat -lnu 2>/dev/null | grep -q ":${AGH_PORT} " || return 1
+		netstat -lnt 2>/dev/null | grep -q ":${AGH_PORT} " || return 1
+	fi
+	return 0
 }
 
-if agh_available; then
-	# IPv4
-	redirect_dns iptables
+ipv6_nat_ok() {
+	command -v ip6tables >/dev/null 2>&1 || return 1
+	[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
+	ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1
+}
 
-	# IPv6：先确认 ip6tables 和 nat 表可用，避免 IPv6 关闭时刷错误日志
-	if command -v ip6tables >/dev/null 2>&1; then
-		[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
-		if ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1; then
-			redirect_dns ip6tables
-		else
-			# 2026-10-29: 缺 ip6table_nat 时不能静默跳过, 否则 v6 客户端会绕过 ADH。
-			logger -t firewall.user "IPv6 DNS redirect skipped: ip6tables nat table unavailable" 2>/dev/null || true
-		fi
-	fi
-else
-	logger -t firewall.user "AdGuardHome core missing or service disabled; skip DNS redirect to 5553" 2>/dev/null || true
+# 先清旧规则，再决定是否添加。
+command -v iptables >/dev/null 2>&1 && dns_rule_delete iptables
+if ipv6_nat_ok; then
+	dns_rule_delete ip6tables
 fi
 
-unset _ipt _p
+if agh_available; then
+	dns_rule_add iptables
+	if ipv6_nat_ok; then
+		dns_rule_add ip6tables
+	else
+		logger -t firewall.user "IPv6 DNS redirect skipped: ip6tables nat table unavailable" 2>/dev/null || true
+	fi
+else
+	logger -t firewall.user "AdGuardHome unavailable (core/enable/process/port ${AGH_PORT}); DNS redirect cleared, using dnsmasq" 2>/dev/null || true
+fi
+
+unset _ipt _p _port

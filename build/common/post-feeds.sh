@@ -182,6 +182,35 @@ fi
 if [ -d "$AU_PKG" ]; then
 [ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
 
+# 2026-10-30: 上游会通过 /tmp/autoupgrade.pid + ps|grep 全局结束 wget/uclient-fetch/curl,
+# 可能误杀订阅/规则下载等无关进程; 改成 mkdir 互斥锁, 不再按进程名杀。
+if ! grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN"; then
+  grep -q '^Select=""$' "$AU_BIN" || { echo "!! ${AU_BIN} 缺少 Select 锚点, 无法插入升级互斥锁"; exit 1; }
+  awk '!done && /^Select=""$/ {
+    print
+    print ""
+    print "# 2026-10-30: 升级互斥; 防止手动/定时同时删下载文件"
+    print "AUTOUPGRADE_LOCK=\"/tmp/autoupgrade.lock\""
+    print "if ! mkdir \"$AUTOUPGRADE_LOCK\" 2>/dev/null; then"
+    print "    echo \"另一个 AutoUpdate 正在运行\" >&2"
+    print "    exit 1"
+    print "fi"
+    print "trap \"rmdir /tmp/autoupgrade.lock 2>/dev/null\" EXIT INT TERM"
+    done=1
+    next
+  }
+  { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+fi
+grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN" || { echo "!! 包内 AutoUpdate 的升级互斥锁未插入"; exit 1; }
+
+if grep -q 'autoupgrade.pid' "$AU_BIN"; then
+  perl -0pi -e 's{    # 清理下载进程\n    if \[ -f "/tmp/autoupgrade\.pid" \]; then\n.*?\n    fi\n}{    # 2026-10-30: 不再全局结束 wget/uclient-fetch/curl; 互斥锁已防止并发。\n}s' "$AU_BIN"
+fi
+if grep -q 'autoupgrade.pid' "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 仍保留按进程名杀下载的逻辑"
+  exit 1
+fi
+
 # 2026-10-23: BOOT_TYPE 按发布名精确映射(不是简单大写化)。
 # 上游脚本按 x86 + /sys/firmware/efi 判出小写 uefi/legacy/sysupgrade, 而本仓库发布名
 # 是 -UEFI- / -Legacy- / -Sysupg-(build/common/upgrade.sh:131/137/149), grep -E 大小写敏感。
@@ -309,11 +338,32 @@ echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置
 #   2) 备份写到 /mnt, 而 /mnt 就在 overlay 上, 和被升级的系统同一块盘;
 #   3) 每次升级都往 crontab 追加 `check_network`, 那个脚本在镜像里根本不存在,
 #      留下只会每 10 分钟刷一条 sh: not found(post-feeds 删的是静态那行, 拦不住这里)。
-#   兜底的 -F -q 改成 -F: -q 只是静默, -n 才是不保留配置, 原写法语义含糊。
+#   正常路径去掉 -F, 先 sysupgrade -T 检查兼容性; -q 只是静默, -n 才是不保留配置。
 if grep -q 'beifen_luci' "$AU_BIN"; then
   perl -0pi -e 's{        # 清理配置文件\n        mv /etc/config/luci /tmp/beifen_luci\n        # 添加定时任务\n        sed -i .*?check_network.*?\n        echo .*?check_network.*?\n        # 重启 cron 服务\n        /etc/init.d/cron restart\n        # 备份系统\n        rm -rf /mnt/\*upback\.tar\.gz\n        sysupgrade -b /mnt/upback\.tar\.gz\n        mv /tmp/beifen_luci /etc/config/luci\n}{        # 2026-10-28: 备份必须原样包含 /etc/config/luci, 且不能写在 overlay 上的 /mnt\n        #   (细节见 post-feeds.sh 里同名注释); check_network 的定时任务也不再追加。\n        rm -f /tmp/upback.tar.gz\n        ( umask 077; sysupgrade -b /tmp/upback.tar.gz )\n        chmod 600 /tmp/upback.tar.gz 2>/dev/null || true\n}s' "$AU_BIN"
-  perl -0pi -e 's{if \[ -f "/mnt/upback\.tar\.gz" \]; then}{if [ -f "/tmp/upback.tar.gz" ]; then}; s{UPGRADE_COMMAND="sysupgrade -F -f /mnt/upback\.tar\.gz"}{UPGRADE_COMMAND="sysupgrade -F -f /tmp/upback.tar.gz"}; s{UPGRADE_COMMAND="sysupgrade -F -q"}{UPGRADE_COMMAND="sysupgrade -F"}' "$AU_BIN"
+  perl -0pi -e 's{if \[ -f "/mnt/upback\.tar\.gz" \]; then}{if [ -f "/tmp/upback.tar.gz" ]; then}; s{UPGRADE_COMMAND="sysupgrade -F -f /mnt/upback\.tar\.gz"}{UPGRADE_COMMAND="sysupgrade -f /tmp/upback.tar.gz"}; s{UPGRADE_COMMAND="sysupgrade -F -q"}{UPGRADE_COMMAND="sysupgrade"}; s{UPGRADE_COMMAND="sysupgrade -F -n"}{UPGRADE_COMMAND="sysupgrade -n"}' "$AU_BIN"
+  # 2026-10-30: 正常升级不再用 -F。先 sysupgrade -T 验证镜像与当前设备/分区兼容,
+  # 失败就中止; 确认要强制刷机时由用户手动执行 -F, 不让 OTA 静默绕过检查。
+  if ! grep -q 'sysupgrade -T' "$AU_BIN"; then
+    grep -q '^    \$UPGRADE_COMMAND "\$DOWNLOAD_PATH/\$REMOTE_FIRMWARE"$' "$AU_BIN" || {
+      echo "!! 包内 AutoUpdate 缺少 UPGRADE_COMMAND 执行行, 无法插入 -T 检查"; exit 1
+    }
+    awk '!done && /^    \$UPGRADE_COMMAND "\$DOWNLOAD_PATH\/\$REMOTE_FIRMWARE"$/ {
+      print "    if ! sysupgrade -T \"$DOWNLOAD_PATH/$REMOTE_FIRMWARE\"; then"
+      print "        TIME r \"镜像兼容性检查失败(sysupgrade -T), 已中止; 如确认强制刷机请手动执行 sysupgrade -F\""
+      print "    fi"
+      print
+      done=1
+      next
+    }
+    { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+  fi
 fi
+if grep -q 'UPGRADE_COMMAND="sysupgrade -F' "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 正常升级仍使用 sysupgrade -F"
+  exit 1
+fi
+grep -q 'sysupgrade -T' "$AU_BIN" || { echo "!! 包内 AutoUpdate 没有 sysupgrade -T 兼容性检查"; exit 1; }
 if grep -q 'beifen_luci' "$AU_BIN"; then
   echo "!! 包内 AutoUpdate 的 luci 搬移段没删掉(上游改写?), 升级会丢 LuCI 配置"
   exit 1
