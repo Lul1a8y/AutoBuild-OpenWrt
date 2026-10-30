@@ -506,6 +506,8 @@ jobs:
         # .config 一改仍会把旧 staging_dir 整树恢复回来。故加构建指纹(与缓存 key 同一输入):
         #   staging_dir/.hermes-build-fingerprint 与本次指纹不一致 → 清 toolchain, 安全降级走冷编。
         # 注意: 不把 lede commit 放进 key/指纹 —— 上游每次 bump 都全冷编(5h21m 已逼近 6h 上限)。
+        # 2026-10-30: CACHE_FP 仍用于缓存 key；新增 TOOLCHAIN_FP(只含 target/arch/compiler/libc)判断
+        # toolchain 是否可复用。运行期文件(firewall/uci-defaults)变化不再导致 toolchain 冷编。
         # 2026-10-20 修(第二轮): 指纹之前一直读 "${PATH1}/.config", 但「加载设置」里已执行
         #   mv "$PATH1/$CONFIG_FILE" .config
         # 该文件被搬进 openwrt/ 了, 所以这里永远"缺失" → 指纹恒为 unknown → 每次都走
@@ -520,7 +522,7 @@ jobs:
           CACHE_FP="$(
             {
               cat "${SRC_DIR}/.config"
-              cat "${SRC_DIR}/settings.ini"
+              grep -E '^REPO_(URL|BRANCH)=' "${SRC_DIR}/settings.ini" 2>/dev/null || true
               find "${GITHUB_WORKSPACE}/build/common" "${SRC_DIR}/files" "${SRC_DIR}/diy-part.sh" -type f -print0 2>/dev/null \
                 | sort -z | xargs -0 sha256sum
             } | sha256sum | awk '{print $1}'
@@ -531,26 +533,44 @@ jobs:
         fi
         echo "CACHE_FP=$CACHE_FP" >> $GITHUB_ENV
         echo "== 本次构建指纹: ${CACHE_FP:0:16} =="
+        # 2026-10-30: toolchain 兼容性只由架构/编译器/libc/目标配置决定，不能用包含
+        # firewall.user、uci-defaults 等运行期文件的 CACHE_FP 判断；否则改一个防火墙
+        # 文件也会让 toolchain 全冷编。单独算 TOOLCHAIN_FP。
+        if [ -f "${SRC_DIR}/.config" ] && [ -f "${SRC_DIR}/settings.ini" ]; then
+          TOOLCHAIN_FP="$(
+            {
+              grep -E '^CONFIG_(TARGET_[a-z0-9_]+=y$|TARGET_(BOARD|SUBTARGET|ARCH|PROFILE)=|ARCH=|GCC|BINUTILS|MUSL|LIBC|TOOLCHAIN)' "${SRC_DIR}/.config" 2>/dev/null || true
+              grep -E '^REPO_(URL|BRANCH)=' "${SRC_DIR}/settings.ini" 2>/dev/null || true
+            } | sha256sum | awk '{print $1}'
+          )"
+        else
+          TOOLCHAIN_FP="unknown"
+        fi
+        echo "TOOLCHAIN_FP=$TOOLCHAIN_FP" >> $GITHUB_ENV
+        echo "== 本次 toolchain 指纹: ${TOOLCHAIN_FP:0:16} =="
         SD="/${{ matrix.target }}/openwrt/staging_dir"
+        BD="/${{ matrix.target }}/openwrt/build_dir"
         if ls "$SD"/toolchain-* >/dev/null 2>&1; then
-          if [ -f "$SD/.hermes-build-fingerprint" ]; then
-            OLD_FP="$(cat "$SD/.hermes-build-fingerprint")"
-            if [ "$OLD_FP" = "$CACHE_FP" ]; then
-              echo "hit=true" >> $GITHUB_OUTPUT
-              echo "== 指纹一致 + toolchain 已恢复 → 增量编译 =="
-            else
-              # 2026-10-18: 不再在这里 rm toolchain。只清 staging_dir/toolchain-* 而不清
-              # build_dir/toolchain-* 会留下 .built 戳记, 下次 make 认为已编好 → binutils 链接期失败
-              # (正是 9/5 的老坑)。失配只告警, 实际清理交给编译步骤里已有的降级路径。
-              echo "::warning::缓存指纹不一致(${OLD_FP:0:16} ≠ ${CACHE_FP:0:16}) → 告警, 交编译步骤自行降级"
-              echo "hit=true" >> $GITHUB_OUTPUT
-            fi
-          else
-            # 2026-10-20: 旧缓存(10-09 那份)没写指纹文件, 无法校验, 仍按增量走 —— 冷编 5h21m
-            # 贴着 355min 上限, 不能为了"可能的不一致"就放弃缓存。一致性由「编译固件」里
-            # 强制丢弃 dl/go-mod-cache 来兜底(见该步骤注释)。
-            echo "::warning::缓存里没有指纹文件(旧缓存) → 本次按增量处理, 成功后补写"
+          OLD_TC=""
+          [ -f "$SD/.hermes-toolchain-fingerprint" ] && OLD_TC="$(cat "$SD/.hermes-toolchain-fingerprint")"
+          if [ "$OLD_TC" = "$TOOLCHAIN_FP" ]; then
             echo "hit=true" >> $GITHUB_OUTPUT
+            echo "== toolchain 指纹一致 + 已恢复 → 增量编译 =="
+          elif [ -z "$OLD_TC" ] && [ -f "$SD/.hermes-build-fingerprint" ] && [ "$(cat "$SD/.hermes-build-fingerprint")" = "$CACHE_FP" ]; then
+            # 兼容旧缓存：没有 toolchain 指纹，但旧的 broad 指纹完全一致，信任并补写。
+            echo "== 旧缓存 broad 指纹一致 → 补写 toolchain 指纹, 增量编译 =="
+            echo "$TOOLCHAIN_FP" > "$SD/.hermes-toolchain-fingerprint"
+            echo "hit=true" >> $GITHUB_OUTPUT
+          else
+            # 2026-10-30: toolchain 指纹不一致时不能继续 hit=true。restore-keys 恢复的是旧
+            # staging_dir；只删 staging_dir/toolchain-* 会留下 build_dir 的 .built 戳记，
+            # 下次 make 误以为已编好（9/5 binutils 链接失败的根因）。这里同时清掉
+            # staging_dir/toolchain-* 和 build_dir/toolchain-*，然后按冷编处理；
+            # dl/ 仍保留，不需要重新下载源码包。
+            echo "::warning::toolchain 指纹不一致(${OLD_TC:0:16} ≠ ${TOOLCHAIN_FP:0:16}) → 清理 toolchain 缓存并冷编"
+            rm -rf "$SD"/toolchain-* "$BD"/toolchain-*
+            rm -f "$SD/.hermes-toolchain-fingerprint" "$SD/.hermes-build-fingerprint"
+            echo "hit=false" >> $GITHUB_OUTPUT
           fi
         else
           echo "hit=false" >> $GITHUB_OUTPUT
@@ -633,6 +653,7 @@ jobs:
         }
         # 2026-10-17: 指纹写进 staging_dir(随缓存一起保存), 供下次 restore-keys 部分命中时比对
         echo "${CACHE_FP}" > staging_dir/.hermes-build-fingerprint
+        echo "${TOOLCHAIN_FP}" > staging_dir/.hermes-toolchain-fingerprint
         echo "status=success" >> $GITHUB_ENV
 
     - name: 构建产物自检
