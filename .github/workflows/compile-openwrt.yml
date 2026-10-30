@@ -1115,6 +1115,9 @@ jobs:
         repo_token: ${{ secrets.REPO_TOKEN }}
         file: signed/*
         tag: AutoUpdate-${{ needs.build.outputs.firmware_date }}
+        # 2026-10-30: 日期 tag 必须指向本次构建 commit; 默认按 main HEAD 创建,
+        # 如果构建期间 main 又提交, tag 会落到更新的 commit(不是这份固件).
+        target_commit: ${{ github.sha }}
         overwrite: false
         file_glob: true
 
@@ -1125,6 +1128,7 @@ jobs:
         file: signed/*
         # 2026-10-21 已合并回 main: 发布通道恢复生产 AutoUpdate(测试分支要改回 AutoUpdate-618-test)
         tag: AutoUpdate
+        target_commit: ${{ github.sha }}
         overwrite: true
         file_glob: true
 
@@ -1178,5 +1182,6 @@ jobs:
         file: Github_Tags/*
         # 2026-10-21 已合并回 main: 同上, 写生产通道
         tag: AutoUpdate
+        target_commit: ${{ github.sha }}
         overwrite: true
         file_glob: true
