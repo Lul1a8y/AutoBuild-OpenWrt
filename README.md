@@ -32,7 +32,9 @@ Note: LuCI 23.05 is incompatible with the old 18.06, cannot preserve config on u
 
 **注意：默认 root 密码是上游 LEDE 的默认值 `password`，未做修改 —— 首次登录后必须立即改掉。如果设备会接入不可信 LAN，请先通过串口/控制台改密，再接入网络。**
 
-> SSH 默认开启密码认证，建议配置公钥后关闭 `PasswordAuth`。ttyd 仅 LAN 访问且走 `/bin/login`，没有 TLS；需要加密请用 SSH 隧道，不要把 7681 直接暴露到 WAN。
+> SSH 默认开启密码认证，建议配置公钥后关闭 `PasswordAuth`。ttyd 仅 LAN 访问且走 `/bin/login`，没有 TLS；不要把 7681 直接暴露到 WAN。需要加密时可从电脑做 SSH 端口转发：
+>
+> `ssh -L 7681:192.168.50.2:7681 -p 12306 root@192.168.50.2`
 >
 > OpenClash 默认关闭；如果启用，请检查它的 DNS 上游和 IPv6 fallback，确认业务查询确实走你预期的加密链路。
 
