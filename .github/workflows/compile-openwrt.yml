@@ -515,8 +515,8 @@ jobs:
         # 这就是 run 39409842961 里 geoview 报
         #   "no required module provides package github.com/sagernet/sing/common/debug"
         # 的直接原因: go-mod-cache 是 10-09 保存的、下载到一半的残缺模组缓存。
-        # 现改为与缓存 key 完全相同的输入(仓库内的原始 build/<target>/ 副本, 未被 mv 动过),
-        # 保证「key 变 ⇔ 指纹变」两者不会脱节。
+        # CACHE_FP 用仓库内的原始 build/<target>/ 副本（未被 mv 动过），作为 broad 快照；
+        # 缓存 key 已去掉 files/**，toolchain 复用改由下面的 TOOLCHAIN_FP 判断。
         SRC_DIR="${GITHUB_WORKSPACE}/build/${{ matrix.target }}"
         OPENWRT="/${{ matrix.target }}/openwrt"
         if [ -f "${SRC_DIR}/.config" ] && [ -f "${SRC_DIR}/settings.ini" ]; then
