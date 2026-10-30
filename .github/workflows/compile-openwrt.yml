@@ -256,6 +256,10 @@ jobs:
         # date 统一用 12 位(与固件名一致), 不再和 14 位格式并存。
         echo "date=${COMPILE_DATE}" >> "$GITHUB_ENV"
         echo "date1=${DATE_SUFFIX}" >> "$GITHUB_ENV"
+        # 2026-10-30: 在当前 step 里立刻回读 GITHUB_ENV, 变量作用域写错时秒级失败,
+        # 不要等 3.5 小时编译完、到发布固件才报 "No tag found"。
+        grep -q "^Compile_Date=${COMPILE_DATE}$" "$GITHUB_ENV" || { echo "!! GITHUB_ENV 的 Compile_Date 写入异常"; exit 1; }
+        grep -q "^date=${COMPILE_DATE}$" "$GITHUB_ENV" || { echo "!! GITHUB_ENV 的 date 写入异常"; exit 1; }
         OC_CFG="${GITHUB_WORKSPACE}/build/${{matrix.target}}/files/etc/config/openclash"
         if [ -f "$OC_CFG" ]; then
           if [ -n "$OC_PASS_SECRET" ]; then
