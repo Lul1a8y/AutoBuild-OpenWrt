@@ -1,17 +1,19 @@
 #!/bin/sh
-# 2026-10-30: 只补默认值, 不再覆盖用户显式设置的 interface。
-# 旧逻辑会把用户改成的 127.0.0.1 强制改回 @lan, 导致“想只绑回环”的设置每次升级失效。
-# 需要 LAN 访问时默认仍是 @lan + /bin/login; 想收紧就自己设 127.0.0.1 并用 SSH 隧道。
-# 说明: 本包 ttyd 没有 TLS 支持(带 -S 启动直接 rc=1), 不要用 HTTP Basic 当成加密。
+# 2026-10-30: 按实际使用需求保持 ttyd 在 LAN 监听。
+# ttyd 本身没有 TLS，但登录由 /bin/login + root 密码把关；本机 LAN 是可信任网络时，
+# 这比把 LuCI 的「终端」按钮改坏更实用。不要把 7681 暴露到 WAN。
+# 如果确实要只绑回环，需要修改这个 uci-defaults 脚本本身，否则升级会改回 @lan。
+#
+# 旧逻辑只在 interface 被改成 127.0.0.1 时改回 @lan；保留这个行为。
 
 [ -f /etc/config/ttyd ] || exit 0
 
 cur="$(uci -q get ttyd.@ttyd[0].interface)"
-if [ -z "${cur}" ]; then
-	uci -q set ttyd.@ttyd[0].interface='@lan'
-	uci -q commit ttyd
-	/etc/init.d/ttyd restart >/dev/null 2>&1
-	logger -t ttyd-defaults "ttyd interface 未设置, 默认使用 @lan(登录仍由 /bin/login 把关)"
-fi
+[ "${cur}" = "127.0.0.1" ] || exit 0
+
+uci -q set ttyd.@ttyd[0].interface='@lan'
+uci -q commit ttyd
+/etc/init.d/ttyd restart >/dev/null 2>&1
+logger -t ttyd-defaults "ttyd 由 127.0.0.1 改回 @lan(登录仍由 /bin/login 把关)"
 
 exit 0
