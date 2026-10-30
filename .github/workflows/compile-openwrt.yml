@@ -493,7 +493,7 @@ jobs:
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/files/**', matrix.target), format('build/{0}/diy-part.sh', matrix.target)) }}
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target)) }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-openwrt-
 
@@ -518,6 +518,7 @@ jobs:
         # 现改为与缓存 key 完全相同的输入(仓库内的原始 build/<target>/ 副本, 未被 mv 动过),
         # 保证「key 变 ⇔ 指纹变」两者不会脱节。
         SRC_DIR="${GITHUB_WORKSPACE}/build/${{ matrix.target }}"
+        OPENWRT="/${{ matrix.target }}/openwrt"
         if [ -f "${SRC_DIR}/.config" ] && [ -f "${SRC_DIR}/settings.ini" ]; then
           CACHE_FP="$(
             {
@@ -541,6 +542,11 @@ jobs:
             {
               grep -E '^CONFIG_(TARGET_[a-z0-9_]+=y$|TARGET_(BOARD|SUBTARGET|ARCH|PROFILE)=|ARCH=|GCC|BINUTILS|MUSL|LIBC|TOOLCHAIN)' "${SRC_DIR}/.config" 2>/dev/null || true
               grep -E '^REPO_(URL|BRANCH)=' "${SRC_DIR}/settings.ini" 2>/dev/null || true
+              # 2026-10-30: .config 是种子配置，通常没有 GCC/BINUTILS/MUSL 行；
+              # 把真正定义工具链的文件也纳入指纹，避免上游升级 GCC/musl 时缓存不失效。
+              [ -f "${OPENWRT}/rules.mk" ] && sha256sum "${OPENWRT}/rules.mk"
+              find "${OPENWRT}/include/toolchain" -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null || true
+              find "${OPENWRT}/target/linux" -mindepth 2 -maxdepth 2 -name Makefile -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null || true
             } | sha256sum | awk '{print $1}'
           )"
         else

@@ -192,16 +192,26 @@ if ! grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN"; then
     print "# 2026-10-30: 升级互斥; 防止手动/定时同时删下载文件"
     print "AUTOUPGRADE_LOCK=\"/tmp/autoupgrade.lock\""
     print "if ! mkdir \"$AUTOUPGRADE_LOCK\" 2>/dev/null; then"
-    print "    echo \"另一个 AutoUpdate 正在运行\" >&2"
-    print "    exit 1"
+    print "    if [ -f \"$AUTOUPGRADE_LOCK/pid\" ]; then"
+    print "        oldpid=\"$(cat \"$AUTOUPGRADE_LOCK/pid\" 2>/dev/null)\""
+    print "        if [ -n \"$oldpid\" ] && kill -0 \"$oldpid\" 2>/dev/null; then"
+    print "            echo \"另一个 AutoUpdate 正在运行\" >&2"
+    print "            exit 1"
+    print "        fi"
+    print "    fi"
+    print "    rm -rf \"$AUTOUPGRADE_LOCK\""
+    print "    mkdir \"$AUTOUPGRADE_LOCK\" 2>/dev/null || { echo \"无法创建升级锁\" >&2; exit 1; }"
     print "fi"
-    print "trap \"rmdir /tmp/autoupgrade.lock 2>/dev/null\" EXIT INT TERM"
+    print "echo $$ > \"$AUTOUPGRADE_LOCK/pid\" || { echo \"无法写入升级锁\" >&2; rm -rf \"$AUTOUPGRADE_LOCK\"; exit 1; }"
+    print "trap \"rm -rf /tmp/autoupgrade.lock\" EXIT"
+    print "trap \"rm -rf /tmp/autoupgrade.lock; exit 130\" INT TERM"
     done=1
     next
   }
   { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
 fi
 grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN" || { echo "!! 包内 AutoUpdate 的升级互斥锁未插入"; exit 1; }
+grep -q 'exit 130' "$AU_BIN" || { echo "!! 包内 AutoUpdate 的 INT/TERM trap 未正确插入"; exit 1; }
 
 if grep -q 'autoupgrade.pid' "$AU_BIN"; then
   perl -0pi -e 's{    # 清理下载进程\n    if \[ -f "/tmp/autoupgrade\.pid" \]; then\n.*?\n    fi\n}{    # 2026-10-30: 不再全局结束 wget/uclient-fetch/curl; 互斥锁已防止并发。\n}s' "$AU_BIN"

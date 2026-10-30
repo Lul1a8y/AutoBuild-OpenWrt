@@ -143,8 +143,8 @@ if [ -n "$ADDM" ]; then
 else
   ok "未设置 addnmount(无该故障面)"
 fi
-pgrep -f AdGuardHome >/dev/null 2>&1 && ok "AdGuardHome 进程在" || warn "AdGuardHome 进程不在"
-pgrep -f mosdns >/dev/null 2>&1 && ok "mosdns 进程在" || warn "mosdns 进程不在"
+pidof AdGuardHome >/dev/null 2>&1 && ok "AdGuardHome 进程在" || warn "AdGuardHome 进程不在"
+pidof mosdns >/dev/null 2>&1 && ok "mosdns 进程在" || warn "mosdns 进程不在"
 CRASH="$(logread 2>/dev/null | grep -ciE 'dnsmasq.*(crash|segfault|exited)')"
 [ "${CRASH:-0}" = "0" ] && ok "本次开机无 dnsmasq 崩溃记录" || warn "logread 有 $CRASH 条 dnsmasq 崩溃记录"
 # 解析测试
@@ -199,7 +199,7 @@ else
 fi
 R4="$(iptables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
 R6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
-if pgrep -f AdGuardHome >/dev/null 2>&1; then
+if pidof AdGuardHome >/dev/null 2>&1; then
   [ -n "$R4" ] && ok "LAN IPv4 53→5553 劫持规则存在" || warn "AGH 在跑但未见 IPv4 53→5553 劫持规则"
   [ -n "$R6" ] && ok "LAN IPv6 53→5553 劫持规则存在" || warn "AGH 在跑但未见 IPv6 53→5553 劫持规则"
 else

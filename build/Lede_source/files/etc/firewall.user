@@ -25,6 +25,7 @@ AGH_PORT="$(awk '/^dns:/{f=1;next} f && /^[[:space:]]+port:/{print $2; exit}' /e
 case "${AGH_PORT:-}" in
 	''|*[!0-9]*) AGH_PORT=5553 ;;
 esac
+[ "${AGH_PORT}" -ge 1 ] 2>/dev/null && [ "${AGH_PORT}" -le 65535 ] 2>/dev/null || AGH_PORT=5553
 
 dns_rule_delete() {
 	_ipt="$1"
@@ -54,7 +55,7 @@ agh_available() {
 	{ [ -x /usr/bin/AdGuardHome ] || [ -x /etc/AdGuardHome/AdGuardHome ]; } || return 1
 	[ -x /etc/init.d/AdGuardHome ] || return 1
 	/etc/init.d/AdGuardHome enabled >/dev/null 2>&1 || return 1
-	pgrep -f AdGuardHome >/dev/null 2>&1 || return 1
+	pidof AdGuardHome >/dev/null 2>&1 || return 1
 	if command -v netstat >/dev/null 2>&1; then
 		netstat -lnu 2>/dev/null | grep -q ":${AGH_PORT} " || return 1
 		netstat -lnt 2>/dev/null | grep -q ":${AGH_PORT} " || return 1
