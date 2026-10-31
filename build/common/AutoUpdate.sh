@@ -91,23 +91,26 @@ export Kernel="$(egrep -o "[0-9]+\.[0-9]+\.[0-9]+" /usr/lib/opkg/info/kernel.con
 export Overlay_Available="$(df -h | grep ":/overlay" | awk '{print $4}' | awk 'NR==1')"
 # 2026-10-31(O15): /tmp 是 1777, 固定目录名可被本地低权用户预创建为符号链接,
 # 让 root 的下载/校验/备份写到别处。改为 root 私有 0700 目录, 且拒绝符号链接/非 root 所有者。
+# 2026-10-31(O16): 先拿锁再清理下载目录, 避免第二个实例在拿锁前删掉第一个实例的固件/备份。
 case "${Download_Path}" in
 	*[[:space:]]*) echo "!! Download_Path 含空白, 拒绝使用: ${Download_Path}" >&2; exit 1 ;;
 	/tmp/*) ;;
 	*) Download_Path="/tmp/Downloads" ;;
 esac
-rm -rf "${Download_Path}"
-[ -L "${Download_Path}" ] && { echo "!! ${Download_Path} 是符号链接, 拒绝使用" >&2; exit 1; }
-umask 077
-mkdir -p -m 700 "${Download_Path}" || { echo "!! 无法创建私有下载目录 ${Download_Path}" >&2; exit 1; }
-[ -O "${Download_Path}" ] && [ ! -L "${Download_Path}" ] || { echo "!! ${Download_Path} 所有者异常" >&2; exit 1; }
+# 只接受 /tmp 下的单级目录; 规范尾随斜杠, 拒绝 /tmp 本身、.. 和嵌套路径。
+Download_Path="${Download_Path%/}"
+case "${Download_Path}" in
+	/tmp) echo "!! Download_Path 不能是 /tmp 本身" >&2; exit 1 ;;
+esac
+case "${Download_Path#/tmp/}" in
+	""|.|..|*/*) echo "!! Download_Path 必须是 /tmp 下的单级目录: ${Download_Path}" >&2; exit 1 ;;
+esac
 export Download_Tags="${Download_Path}/Github_Tags"
 export TMP_Available="$(df -m | grep "/tmp" | awk '{print $4}' | awk 'NR==1' | awk -F. '{print $1}')"
-opkg list | awk '{print $1}' > "${Download_Path}/Installed_PKG_List"
-export PKG_List="${Download_Path}/Installed_PKG_List"
 export AutoUpdate_Log_Path="/tmp"
 # 2026-10-31(O15): 手动通道原来没有锁。与包内 /usr/bin/AutoUpdate 共用同一个锁文件,
 # 避免 cron 升级与手动执行同时跑 sysupgrade -b/-f。
+umask 077
 if command -v flock >/dev/null 2>&1; then
 	exec 9>>"/tmp/autoupgrade.lock" || { echo "!! 无法打开升级锁" >&2; exit 1; }
 	flock -n 9 || { echo "!! 已有升级任务在运行, 退出" >&2; exit 1; }
@@ -116,6 +119,17 @@ else
 	mkdir "${LOCK_DIR}" 2>/dev/null || { echo "!! 已有升级任务在运行, 退出" >&2; exit 1; }
 	trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
 fi
+# 拿到锁后才允许删除/重建下载目录; 符号链接检查必须在 rm 之前。
+[ -L "${Download_Path}" ] && { echo "!! ${Download_Path} 是符号链接, 拒绝使用" >&2; exit 1; }
+if [ -e "${Download_Path}" ] && [ ! -d "${Download_Path}" ]; then
+	echo "!! ${Download_Path} 不是目录, 拒绝使用" >&2
+	exit 1
+fi
+rm -rf "${Download_Path}"
+mkdir -p -m 700 "${Download_Path}" || { echo "!! 无法创建私有下载目录 ${Download_Path}" >&2; exit 1; }
+[ -O "${Download_Path}" ] && [ ! -L "${Download_Path}" ] || { echo "!! ${Download_Path} 所有者异常" >&2; exit 1; }
+opkg list | awk '{print $1}' > "${Download_Path}/Installed_PKG_List"
+export PKG_List="${Download_Path}/Installed_PKG_List"
 
 GET_PID() {
 	local Result
