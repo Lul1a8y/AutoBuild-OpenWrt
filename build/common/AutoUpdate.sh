@@ -6,7 +6,7 @@
 Version=V6.5
 
 # 2026-10-31(O5): /etc/CLOUD_Name 会被后续逻辑读取; 只接受安全字符, 防止 JSON 里的
-# 资产名把换行/重定向等带进这个文件。必须定义在 Shell_Helper 之前(-h 路径会用到)。
+# 资产名把换行/重定向等带进这个文件。正常升级路径会调用; -h 不写。
 write_cloud_name() {
 	[ -n "$1" ] || return 0
 	if [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -55,14 +55,14 @@ echo -e "${Purple}
 ===============================================================================================
 ${White}"
 echo
-[[ -f /etc/CLOUD_Name ]] && {
+# 2026-11-01(O10): -h/-l 和非法参数只读本地缓存, 不访问 GitHub, 也不创建
+# /etc/CLOUD_Name、/etc/openwrt_ver。帮助页没有缓存时显示“未缓存”, 由正常升级写入。
+if [[ -f /etc/CLOUD_Name ]]; then
 	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | select_latest_firmware)" > /dev/null 2>&1
-} || {
-	wget -q --timeout=30 --tries=2 "${Github_Tags}" -O "${Download_Tags}" > /dev/null 2>&1 || \
-	wget -q --timeout=30 --tries=2 "${Github_Tagstwo}" -O "${Download_Tags}" > /dev/null 2>&1
-	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | select_latest_firmware)" > /dev/null 2>&1
-	[[ ! -f /etc/CLOUD_Name ]] && write_cloud_name "${CLOUD_Name}"
-}
+else
+	export CLOUD_Name="未缓存"
+fi
+[[ -n "${CLOUD_Name}" ]] || export CLOUD_Name="未缓存"
 echo -e "${Green}详细参数：
 
 /overlay 可用:					${Overlay_Available}
@@ -127,6 +127,33 @@ esac
 export Download_Tags="${Download_Path}/Github_Tags"
 export TMP_Available="$(df -m | grep "/tmp" | awk '{print $4}' | awk 'NR==1' | awk -F. '{print $1}')"
 export AutoUpdate_Log_Path="/tmp"
+# 2026-11-01(O10): 帮助必须在拿锁、清理下载目录之前返回; 只读本地信息。
+case ${DEFAULT_Device} in
+x86-64)
+	[ -d /sys/firmware/efi ] && {
+		export BOOT_Type="-UEFI"
+		export EFI_Mode="UEFI"
+	} || {
+		export BOOT_Type="-Legacy"
+		export EFI_Mode="Legacy"
+	}
+	export CURRENT_Device="$(jsonfilter -e '@.model.id' < /etc/board.json | tr ',' '_')"
+	export Firmware_SFX=".${Firmware_Type}"
+	[[ -z "${Firmware_Type}" ]] && export Firmware_SFX=".img.gz"
+;;
+*)
+	export CURRENT_Device="$(jsonfilter -e '@.model.id' < /etc/board.json | tr ',' '_')"
+	export Firmware_SFX=".${Firmware_Type}"
+	export BOOT_Type="-Sysupg"
+	export EFI_Mode=""
+	[[ -z "${Firmware_Type}" ]] && export Firmware_SFX=".bin"
+esac
+export CURRENT_Ver="${CURRENT_Version}${BOOT_Type}"
+case ${Input_Option} in
+	-h|-H|-l|-L)
+		Shell_Helper
+	;;
+esac
 # 2026-10-31(O15): 手动通道原来没有锁。与包内 /usr/bin/AutoUpdate 共用同一个锁文件,
 # 避免 cron 升级与手动执行同时跑 sysupgrade -b/-f。
 umask 077
@@ -188,34 +215,6 @@ LOGGER() {
 	[[ ! -f ${AutoUpdate_Log_Path}/AutoUpdate.log ]] && touch ${AutoUpdate_Log_Path}/AutoUpdate.log
 	echo "[$(date "+%Y-%m-%d-%H:%M:%S")] [$(GET_PID AutoUpdate.sh)] $*" >> ${AutoUpdate_Log_Path}/AutoUpdate.log
 }
-case ${DEFAULT_Device} in
-x86-64)
-	[ -d /sys/firmware/efi ] && {
-		export BOOT_Type="-UEFI"
-		export EFI_Mode="UEFI"
-	} || {
-		export BOOT_Type="-Legacy"
-		export EFI_Mode="Legacy"
-	}
-	export CURRENT_Device="$(jsonfilter -e '@.model.id' < /etc/board.json | tr ',' '_')"
-  	export Firmware_SFX=".${Firmware_Type}"
-	[[ -z "${Firmware_Type}" ]] && export Firmware_SFX=".img.gz"
-;;
-*)
-	export CURRENT_Device="$(jsonfilter -e '@.model.id' < /etc/board.json | tr ',' '_')"
-	export Firmware_SFX=".${Firmware_Type}"
-	export BOOT_Type="-Sysupg"
-	export EFI_Mode=""
-	[[ -z "${Firmware_Type}" ]] && export Firmware_SFX=".bin"
-esac
-export CURRENT_Ver="${CURRENT_Version}${BOOT_Type}"
-# 2026-10-29: 只有内容变化时才写 /etc/openwrt_ver, 避免每次手动/定时运行都写 overlay。
-OPENWRT_VER_CONTENT="$(printf 'CURRENT_Version=%s\n\nCURRENT_Model=%s%s\n\nNEI_Luci=%s - %s\n' \
-	"${CURRENT_Version}" "${EFI_Mode}" "${Firmware_SFX}" "${Kernel}" "${Luci_Edition}")"
-if [ ! -f /etc/openwrt_ver ] || [ "$(cat /etc/openwrt_ver 2>/dev/null)" != "${OPENWRT_VER_CONTENT}" ]; then
-	printf '%s\n' "${OPENWRT_VER_CONTENT}" > /etc/openwrt_ver
-fi
-unset OPENWRT_VER_CONTENT
 cd /etc
 clear && echo "Openwrt-AutoUpdate Script ${Version}"
 echo
@@ -323,9 +322,6 @@ else
 				exit 1
 			}
 	;;
-	-h | -H | -l | -L)
-		Shell_Helper
-	;;
 	-g | -G)
 		# 18.06/19.07/21.02 通道均已 EOL; 不再调用 replace.sh, 与帮助文本保持一致。
 		TIME r "旧通道转换(-g)已停用: 18.06/19.07/21.02 均已 EOL, 请手动刷入当前固件。"
@@ -337,6 +333,15 @@ else
 	;;
 	esac
 fi
+# 2026-11-01(O10): -h/-c/-g/非法参数已在 case 内退出; 只有实际升级流程才写
+# /etc/openwrt_ver, 帮助不会因为新机器上文件缺失而污染 overlay。
+# 2026-10-29: 只有内容变化时才写, 避免每次手动/定时运行都写 overlay。
+OPENWRT_VER_CONTENT="$(printf 'CURRENT_Version=%s\n\nCURRENT_Model=%s%s\n\nNEI_Luci=%s - %s\n' \
+	"${CURRENT_Version}" "${EFI_Mode}" "${Firmware_SFX}" "${Kernel}" "${Luci_Edition}")"
+if [ ! -f /etc/openwrt_ver ] || [ "$(cat /etc/openwrt_ver 2>/dev/null)" != "${OPENWRT_VER_CONTENT}" ]; then
+	printf '%s\n' "${OPENWRT_VER_CONTENT}" > /etc/openwrt_ver
+fi
+unset OPENWRT_VER_CONTENT
 [[ -z ${CURRENT_Version} ]] && TIME r "本地固件版本获取失败,请检查/bin/openwrt_info文件的值!" && exit 1
 [[ -z ${Github} ]] && TIME r "Github地址获取失败,请检查/bin/openwrt_info文件的值!" && exit 1
 TIME g "正在获取云端固件版本信息..."
