@@ -182,6 +182,25 @@ fi
 if [ -d "$AU_PKG" ]; then
 [ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
 
+# 2026-10-31: LuCI 检查/升级按钮会 `rm -f ... /tmp/autoupgrade.*`, 这个通配把
+# AutoUpdate 自己的 flock 锁文件(/tmp/autoupgrade.lock)也删了。锁的是 inode, 删掉后
+# 新进程会新建一个 inode 再拿到锁 —— cron 正在升级时点「检查」, 就会再起一个
+# AutoUpdate, 两个进程同时对同一路径 sysupgrade -b/-f, 备份损坏甚至双写 flash。
+# 只删状态文件, 保留锁文件。
+AU_CTL="$AU_PKG/luasrc/controller/autoupdate.lua"
+if [ -f "$AU_CTL" ]; then
+  if grep -q 'rm -f /tmp/compare_version /tmp/autoupdate\.lock /tmp/autoupgrade\.\*' "$AU_CTL"; then
+    sed -i 's#rm -f /tmp/compare_version /tmp/autoupdate\.lock /tmp/autoupgrade\.\*#rm -f /tmp/compare_version /tmp/autoupgrade.pid /tmp/autoupgrade.exitcode /tmp/autoupgrade.log /tmp/autoupdate.log#' "$AU_CTL"
+  fi
+  grep -q 'rm -f /tmp/compare_version /tmp/autoupgrade\.pid' "$AU_CTL" || {
+    echo "!! ${AU_CTL} 的清理行不是预期形态, 无法保留 autoupgrade.lock"; exit 1
+  }
+  if grep -q 'rm -f /tmp/compare_version /tmp/autoupdate\.lock /tmp/autoupgrade\.\*' "$AU_CTL"; then
+    echo "!! ${AU_CTL} 仍会删除 autoupgrade.lock(并发升级风险)"; exit 1
+  fi
+  echo "== luci-app-autoupdate 控制器不再删除升级锁 =="
+fi
+
 # 2026-10-30: 上游会通过 /tmp/autoupgrade.pid + ps|grep 全局结束 wget/uclient-fetch/curl,
 # 可能误杀订阅/规则下载等无关进程; 改成 mkdir 互斥锁, 不再按进程名杀。
 if ! grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN"; then
@@ -346,6 +365,9 @@ echo "== 已去掉升级前删除 gzip 的逻辑(否则 -u 备份失败、配置
 if grep -q 'beifen_luci' "$AU_BIN"; then
   perl -0pi -e 's{        # 清理配置文件\n        mv /etc/config/luci /tmp/beifen_luci\n        # 添加定时任务\n        sed -i .*?check_network.*?\n        echo .*?check_network.*?\n        # 重启 cron 服务\n        /etc/init.d/cron restart\n        # 备份系统\n        rm -rf /mnt/\*upback\.tar\.gz\n        sysupgrade -b /mnt/upback\.tar\.gz\n        mv /tmp/beifen_luci /etc/config/luci\n}{        # 2026-10-28: 备份必须原样包含 /etc/config/luci, 且不能写在 overlay 上的 /mnt\n        #   (细节见 post-feeds.sh 里同名注释); check_network 的定时任务也不再追加。\n        rm -f /tmp/upback.tar.gz\n        ( umask 077; sysupgrade -b /tmp/upback.tar.gz )\n        chmod 600 /tmp/upback.tar.gz 2>/dev/null || true\n}s' "$AU_BIN"
   perl -0pi -e 's{if \[ -f "/mnt/upback\.tar\.gz" \]; then}{if [ -f "/tmp/upback.tar.gz" ]; then}; s{UPGRADE_COMMAND="sysupgrade -F -f /mnt/upback\.tar\.gz"}{UPGRADE_COMMAND="sysupgrade -f /tmp/upback.tar.gz"}; s{UPGRADE_COMMAND="sysupgrade -F -q"}{UPGRADE_COMMAND="sysupgrade"}; s{UPGRADE_COMMAND="sysupgrade -F -n"}{UPGRADE_COMMAND="sysupgrade -n"}' "$AU_BIN"
+  # 2026-10-31: sysupgrade -b 失败时可能留下 0 字节文件, [ -f ] 仍为真, 于是这里会用
+  # -f 刷入一个损坏备份(配置全丢)。改成 [ -s ]: 空文件按失败处理, 退回 sysupgrade。
+  perl -0pi -e 's{if \[ -f "/tmp/upback\.tar\.gz" \]; then}{if [ -s "/tmp/upback.tar.gz" ]; then}' "$AU_BIN"
   # 2026-10-30: 正常升级不再用 -F。先 sysupgrade -T 验证镜像与当前设备/分区兼容,
   # 失败就中止; 确认要强制刷机时由用户手动执行 -F, 不让 OTA 静默绕过检查。
   if ! grep -q 'sysupgrade -T' "$AU_BIN"; then
@@ -376,6 +398,9 @@ if grep -q "/mnt/upback" "$AU_BIN"; then
   echo "!! 包内 AutoUpdate 的备份仍写在 /mnt(overlay 上)"
   exit 1
 fi
+grep -q '\[ -s "/tmp/upback.tar.gz" \]' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 的备份判定没有改成非空检查(0 字节备份仍会被 -f 刷入)"; exit 1
+}
 if grep -q 'usr/bin/check_network' "$AU_BIN"; then
   echo "!! 包内 AutoUpdate 仍会往 crontab 追加 check_network"
   exit 1
