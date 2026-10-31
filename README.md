@@ -128,7 +128,9 @@ OpenClash / PassWall / SSR-Plus / AdGuard Home / mosdns / OpenList(文件管理,
 
 > AdGuard Home 默认只装 `luci-app-adguardhome` 壳，**不打包核心**。刷完固件后在 LuCI 页面点“更新核心”下载，或手动放入 `/usr/bin/AdGuardHome`；`/etc/AdGuardHome.yaml` 和已下载的核心会被 `keep.d` 保留，升级后还原设置即可。
 >
-> `firewall.user` 默认无条件把 LAN IPv4/IPv6 的 53 重定向到 `5553`。不使用 AdGuardHome 的，请删除或清空 `build/Lede_source/files/etc/firewall.user` 里的对应规则，否则 DNS 会指向不存在的 `5553`。
+> **注意刷机顺序**：新镜像默认没有在 `/etc/config/firewall` 中添加 `firewall.user` include，所以 `firewall.user` 里的规则不会自动生效。请先安装/启动 AdGuardHome 核心并启用服务，确认 5553 端口有监听，再添加 include（或恢复包含 include 的防火墙配置）。如果先恢复 include、后装核心，LAN 的 53 会被重定向到没人监听的 5553，表现为 DNS 超时。
+>
+> `firewall.user` 里的重定向规则本身是无条件的：LAN IPv4/IPv6 的 53 都会指向 `5553`。不使用 AdGuardHome 的，请删除或清空 `build/Lede_source/files/etc/firewall.user` 里的对应规则，否则在 include 生效后会指向不存在的 `5553`。
 >
 > OpenClash 的 `clash_meta` 是仓库内置的 x86-64 静态内核，**不会随 OpenClash 上游自动更新**；升级时需同时替换二进制并更新 `build/common/post-feeds.sh` 的 `CLASH_SHA`。
 

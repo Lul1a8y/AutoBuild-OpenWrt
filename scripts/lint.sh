@@ -6,7 +6,17 @@ set -eu
 cd "$(dirname "$0")/.."
 
 status=0
-files="$(find . -path ./.git -prune -o -type f -name '*.sh' -print)"
+# 常规 *.sh 之外，UCI defaults 和部分启动脚本没有 .sh 后缀，也要检查。
+files="$(
+    {
+        find . -path ./.git -prune -o -type f -name '*.sh' -print
+        find build -path '*/files/etc/uci-defaults/*' -type f -print
+        printf '%s\n' \
+            build/Lede_source/files/usr/sbin/app \
+            build/common/LIENOL/diy/package/base-files/files/etc/profile \
+            build/common/MORTAL/diy/package/base-files/files/etc/profile
+    } | sort -u
+)"
 
 echo "== bash -n =="
 for f in $files; do
@@ -29,6 +39,26 @@ if command -v shellcheck >/dev/null 2>&1; then
     shellcheck -S error $files || status=1
 else
     echo "shellcheck 未安装, 跳过"
+fi
+
+echo "== actionlint =="
+if command -v actionlint >/dev/null 2>&1; then
+    actionlint || status=1
+else
+    echo "actionlint 未安装, 跳过"
+fi
+
+echo "== JSON =="
+if command -v jq >/dev/null 2>&1; then
+    json_files="$(git ls-files '*.json' 2>/dev/null || true)"
+    if [ -n "$json_files" ]; then
+        # shellcheck disable=SC2086
+        jq empty $json_files || status=1
+    else
+        echo "没有跟踪的 JSON 文件, 跳过"
+    fi
+else
+    echo "jq 未安装, 跳过"
 fi
 
 echo "== git diff --check =="

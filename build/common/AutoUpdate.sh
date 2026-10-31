@@ -25,11 +25,11 @@ echo -e "${Purple}
 ${White}"
 echo
 [[ -f /etc/CLOUD_Name ]] && {
-	export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | sort | tail -n 1)" > /dev/null 2>&1
+	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | sort | tail -n 1)" > /dev/null 2>&1
 } || {
 	wget -q --timeout=30 --tries=2 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1 || \
 	wget -q --timeout=30 --tries=2 ${Github_Tagstwo} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
-	export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)" > /dev/null 2>&1
+	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)" > /dev/null 2>&1
 	[[ ! -f /etc/CLOUD_Name ]] && [[ ${CLOUD_Name} ]] && echo "${CLOUD_Name}" > /etc/CLOUD_Name
 }
 echo -e "${Green}详细参数：
@@ -172,6 +172,8 @@ else
 			TIME h "执行: 更新固件(不保留配置)"
 		;;
 		-s)
+			# -s 的语义是强制更新, 同时跳过版本比较交互; 与 -f 保持一致。
+			export Force_Update=1
 			export Upgrade_Options="sysupgrade -F -n"
 			TIME h "执行: 强制更新固件(不保留配置)"
 		;;
@@ -257,9 +259,9 @@ else
 		Shell_Helper
 	;;
 	-g | -G)
-		bash /bin/replace.sh || exit 1
-		sleep 1
-		exit 0
+		# 18.06/19.07/21.02 通道均已 EOL; 不再调用 replace.sh, 与帮助文本保持一致。
+		TIME r "旧通道转换(-g)已停用: 18.06/19.07/21.02 均已 EOL, 请手动刷入当前固件。"
+		exit 1
 	;;
 	*)
 		echo -e "\nERROR INPUT: [$*]"
@@ -284,8 +286,6 @@ if [[ $? -ne 0 ]];then
 		fi
 	fi
 fi
-export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
-[[ ! -f /etc/CLOUD_Name ]] && echo "${CLOUD_Name}" > /etc/CLOUD_Name
 TIME g "正在比对云端固件和本地安装固件版本..."
 export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
 export CLOUD_sion="$(echo ${CLOUD_Firmware} | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+")"
@@ -301,7 +301,8 @@ export CLOUD_Version="$(echo ${CLOUD_Firmware} | egrep -o "${REPO_Name}-${DEFAUL
 }
 export Firmware_Name="$(echo ${CLOUD_Firmware} | egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"
 export Firmware="${CLOUD_Firmware}"
-export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CURRENT_Version}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
+export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CLOUD_sion}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
+[[ ${CLOUD_Name} ]] && echo "${CLOUD_Name}" > /etc/CLOUD_Name
 # 2026-10-27: 原来用 grep -n "${Firmware}" 取最后一行再回退 4 行, 按位置猜体积。
 # GitHub API 给每个资产加了 "digest" 字段后资产在 JSON 里的行数变了: tail -1 命中
 # 下载地址行, X-4 落到 "digest" 行 -> 体积恒为 0, 空间检查形同虚设(日志还打印 0M)。

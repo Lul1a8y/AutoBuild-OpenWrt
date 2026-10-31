@@ -65,5 +65,7 @@ service() {
 		ls "/etc/init.d"
 		return 1
 	}
-	/etc/init.d/$@
+	initd="/etc/init.d/$1"
+	shift
+	"$initd" "$@"
 }
