@@ -32,7 +32,9 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id || github.event_name == 'schedule'
-    # 2026-10-09: 冷编实测约 5h21m, GitHub 硬上限 6h → 显式 355min, 超时可控且日志有据
+    # 2026-10-09: 冷编实测约 5h21m(321min), GitHub 单 job 硬上限 6h(360min)。
+    # 2026-10-31: 355min 只留 34min 余量。真正的补救不是改成 420min(会先撞 360min 硬上限),
+    # 而是在降级重编前检查剩余时间(见「编译固件」), 保证失败现场能在 job 被硬杀前归档。
     timeout-minutes: 355
     outputs:
       regular_update: ${{ steps.publishmeta.outputs.regular_update }}
@@ -54,6 +56,11 @@ jobs:
     steps:
     - name: 准备结束
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+    - name: 记录作业开始时间
+      # 2026-10-31: 供「编译固件」的降级重编分支判断剩余时间 —— 失败后无脑再编一次,
+      # 在 5h+ 的冷编上必然撞 job 超时, 连失败现场都留不下。
+      run: echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
     - name: 读取设置
       run: |
@@ -319,6 +326,22 @@ jobs:
           source "${PATH1}/upgrade.sh" && Diy_Part1
         fi
 
+    - name: 校验 OTA 依赖(公钥 + openssl)
+      # 2026-10-31(O3): AutoUpdate 验签硬依赖 /etc/firmware-signing.pub 与 /usr/bin/openssl。
+      # 公钥只在 Lede 源的文件树里; 换源/自定义 config 时缺任一, 设备端 OTA 会永久 fail-closed。
+      # 与其等设备报"缺少公钥/缺少 openssl", 不如在构建期就失败(早失败, 不浪费 5h 编译)。
+      if: env.REGULAR_UPDATE == 'true'
+      run: |
+        set -euo pipefail
+        PUB="build/${{ matrix.target }}/files/etc/firmware-signing.pub"
+        [ -s "${PUB}" ] || { echo "::error::OTA 已启用但缺少验签公钥 ${PUB}(非 Lede 源需自备公钥)"; exit 1; }
+        CFG="openwrt/.config"
+        [ -f "${CFG}" ] || CFG="build/${{ matrix.target }}/.config"
+        grep -qx 'CONFIG_PACKAGE_openssl-util=y' "${CFG}" \
+          || { echo "::error::OTA 已启用但 ${CFG} 未选 openssl-util, 设备端无法验签"; exit 1; }
+        command -v openssl >/dev/null 2>&1 || { echo "::error::runner 缺少 openssl"; exit 1; }
+        echo "== OTA 依赖检查通过: ${PUB} + openssl-util =="
+
     - name: 记录构建来源
       run: |
         # 2026-10-09: 记录本例固件的可追溯信息(随 release 一起发布, 事后可核对源码/配置)
@@ -493,7 +516,10 @@ jobs:
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
           /${{ matrix.target }}/openwrt/staging_dir
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target)) }}
+        # 2026-10-31: key 加 v2 版本前缀(PRF-06)。restore-keys 仍保留宽前缀:
+        # go-mod-cache 已从缓存路径排除, toolchain 还有 .hermes-toolchain-fingerprint 二次校验,
+        # 所以宽前缀只用于复用 dl/, 不会再让坏 toolchain 直接命中。
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-v2-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target)) }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-openwrt-
 
@@ -650,6 +676,15 @@ jobs:
         make -j$(nproc) 2>&1 | tee -a build.log || {
           echo '== 并行编译失败, 错误现场(最后 20 条): =='
           grep -aE "Error [0-9]+|error:|undefined reference|No such file|failed to|Temporary failure" build.log | tail -20 || true
+          ELAPSED_MIN=$(( ( $(date +%s) - ${JOB_START_EPOCH:-$(date +%s)} ) / 60 ))
+          REMAIN_MIN=$(( 355 - ELAPSED_MIN ))
+          echo "== 已运行 ${ELAPSED_MIN}min, 距 job 超时约 ${REMAIN_MIN}min =="
+          # 2026-10-31: 一次降级重编 ≈ 4-5h; 剩余不足 180min 时重编只会撞 job 超时,
+          # 连 fail-diag 都来不及跑。直接失败, 让后续「失败取证」拿到现场。
+          if [ "${REMAIN_MIN}" -lt 180 ]; then
+            echo "::error::剩余 ${REMAIN_MIN}min 不足以完成降级重编(冷编实测 321min), 放弃重编并保留失败现场"
+            exit 1
+          fi
           echo '== 降级: 清 go-mod-cache+musl sysroot, binutils 串行后再并行 =='
           rm -rf dl/go-mod-cache
           rm -rf build_dir/toolchain-*_*/binutils-*
@@ -943,10 +978,13 @@ jobs:
           || echo "::warning::电报通知发送失败(不影响固件与发布)"
 
     - name: 失败取证(归档日志与配置)
-      # 2026-10-20: 原为 if: failure() —— GitHub 的 failure() 在「作业被取消」时也不执行,
-      # 而取消/超时同样需要现场。改为 !cancelled() 后由内部判断是否真有失败要归档;
-      # 成功构建时只做一次瞬时判断, 行为与原来一致(成功就不归档)。
-      if: ${{ !cancelled() }}
+      # 2026-10-20: 原为 if: failure() —— GitHub 的 failure() 在「作业被取消」时也不执行。
+      # 2026-10-31: !cancelled() 同样有坑 —— job 超时/取消时 !cancelled() 为 false,
+      # 恰好在最需要现场时不归档。改为 failure() || cancelled(): 成功时两者都为 false。
+      if: ${{ failure() || cancelled() }}
+      env:
+        REF_NAME: ${{ github.ref_name }}
+        COMMIT_SHA: ${{ github.sha }}
       run: |
         if [ "${{ job.status }}" = "success" ]; then echo "== 本次构建成功, 跳过失败取证 =="; exit 0; fi
         echo "== job.status=${{ job.status }} → 归档失败现场 =="
@@ -960,7 +998,7 @@ jobs:
         {
           echo "## 失败诊断 (run ${{ github.run_id }})"
           echo ""
-          echo "- ref: ${{ github.ref_name }} / sha: ${{ github.sha }}"
+          echo "- ref: ${REF_NAME} / sha: ${COMMIT_SHA}"
           echo "- 构建指纹: ${CACHE_FP:-unknown}"
           echo "- 缓存命中: ${{ steps.cachecheck.outputs.hit }}"
           echo ""
@@ -986,8 +1024,8 @@ jobs:
         du -sh "$OUT" 2>/dev/null || true
 
     - name: 上传失败日志
-      # 2026-10-20: 与失败取证同步改为 !cancelled() —— 取证目录不存在时 if-no-files-found: warn 只告警
-      if: ${{ !cancelled() && job.status != 'success' }}
+      # 2026-10-31: 与失败取证同步改为 failure() || cancelled(), 超时/取消也带走现场。
+      if: ${{ failure() || cancelled() }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: fail-diag-${{ github.run_id }}
@@ -1018,6 +1056,7 @@ jobs:
     - name: 签名并回验
       env:
         SIGN_KEY_B64: ${{ secrets.FIRMWARE_SIGN_KEY_B64 }}
+        VERSION_TAG: AutoUpdate-${{ needs.build.outputs.firmware_date }}
       run: |
         set -euo pipefail
         cd fw
@@ -1025,6 +1064,23 @@ jobs:
         [ -s sha256sums ] || { echo "::error::缺少 sha256sums"; exit 1; }
         sha256sum -c sha256sums --quiet || { echo "::error::待签名固件 sha256sums 校验失败"; exit 1; }
         ls *.sha256 >/dev/null 2>&1 || { echo "::error::没有 *.sha256 清单"; exit 1; }
+
+        # 2026-10-31: 签名前先断言"待签名集合"就是预期的 Legacy+UEFI 两个资产。
+        # 上游产物命名变化/镜像漏编时, 这里失败比把错误资产签进 release 安全。
+        shopt -s nullglob
+        imgs=(*.img.gz)
+        legacy=(); uefi=()
+        for f in "${imgs[@]}"; do
+          case "$f" in
+            *-Legacy-*) legacy+=("$f") ;;
+            *-UEFI-*)   uefi+=("$f") ;;
+          esac
+        done
+        [ "${#imgs[@]}" -eq 2 ] || { echo "::error::待签名固件应为 2 个 *.img.gz(Legacy+UEFI), 实际 ${#imgs[@]}"; exit 1; }
+        [ "${#legacy[@]}" -eq 1 ] || { echo "::error::*-Legacy-*.img.gz 应恰好 1 个, 实际 ${#legacy[@]}"; exit 1; }
+        [ "${#uefi[@]}" -eq 1 ] || { echo "::error::*-UEFI-*.img.gz 应恰好 1 个, 实际 ${#uefi[@]}"; exit 1; }
+        [ "$(wc -l < sha256sums)" -eq 2 ] || { echo "::error::sha256sums 应为 2 项, 实际 $(wc -l < sha256sums)"; exit 1; }
+        [ -n "${VERSION_TAG#AutoUpdate-}" ] || { echo "::error::firmware_date 为空, 无法生成日期 tag"; exit 1; }
 
         umask 077
         printf '%s' "${SIGN_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/fw-signing.pem"
@@ -1040,7 +1096,37 @@ jobs:
             -rawin -in "$f" -sigfile "$f.sig" >/dev/null
           n=$((n + 1))
         done
-        [ "${n}" -gt 0 ] || { echo "::error::没有生成任何 .sha256.sig"; exit 1; }
+        [ "${n}" -eq 2 ] || { echo "::error::应生成 2 个 *.sha256.sig, 实际 ${n}"; exit 1; }
+
+        # 2026-10-31: versions.json / sha256sums 也签名(SEC-13/O13)。
+        # 之前只有 <固件>.sha256 有签名, README 却建议用 versions.json 回滚 —— 清单本身不可认证。
+        # 版本索引改在这里生成, publish 只校验、不再改写(否则会覆盖签名)。
+        {
+          printf '{\n'
+          printf '  "generated": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '  "channel": "AutoUpdate",\n'
+          printf '  "release": "%s",\n' "${VERSION_TAG}"
+          printf '  "assets": [\n'
+          first=1
+          for f in *.img.gz; do
+            [ -f "$f" ] || continue
+            [ "${first}" -eq 1 ] || printf ',\n'
+            first=0
+            printf '    {"name":"%s","size":%s,"sha256":"%s"}' \
+              "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+          done
+          printf '\n  ]\n}\n'
+        } > versions.json
+        jq empty versions.json
+        [ "$(jq '.assets | length' versions.json)" -eq 2 ] || { echo "::error::versions.json 资产数不是 2"; exit 1; }
+
+        for m in sha256sums versions.json; do
+          [ -s "$m" ] || { echo "::error::缺少待签名清单 $m"; exit 1; }
+          openssl pkeyutl -sign -rawin -inkey "${RUNNER_TEMP}/fw-signing.pem" -in "$m" -out "$m.sig"
+          openssl pkeyutl -verify -pubin \
+            -inkey "${GITHUB_WORKSPACE}/build/Lede_source/files/etc/firmware-signing.pub" \
+            -rawin -in "$m" -sigfile "$m.sig" >/dev/null
+        done
         ls -l
 
     - name: 上传签名产物
@@ -1062,6 +1148,11 @@ jobs:
       contents: read
 
     steps:
+    - name: 检出仓库(取验签公钥)
+      # 2026-10-31: 必须在 download-artifact 之前 —— checkout 会 git clean 工作区,
+      # 放在下载之后会把 signed/ 一起清掉。
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
     - name: 下载签名产物
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
@@ -1069,42 +1160,60 @@ jobs:
         path: signed
 
     - name: 发布前校验
-      run: |
-        set -euo pipefail
-        cd signed
-        [ -s sha256sums ] || { echo "::error::缺少 sha256sums"; exit 1; }
-        sha256sum -c sha256sums --quiet
-        ls *.sha256.sig >/dev/null 2>&1 || { echo "::error::缺少 .sha256.sig"; exit 1; }
-
-    - name: 生成版本索引
       env:
         VERSION_TAG: AutoUpdate-${{ needs.build.outputs.firmware_date }}
       run: |
         set -euo pipefail
         cd signed
-        [ "${VERSION_TAG#AutoUpdate-}" != "" ] || { echo "::error::firmware_date 为空, 无法生成日期 tag"; exit 1; }
-        {
-          printf '{\n'
-          printf '  "generated": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          printf '  "channel": "AutoUpdate",\n'
-          printf '  "release": "%s",\n' "${VERSION_TAG}"
-          printf '  "assets": [\n'
-          first=1
-          for f in *; do
-            case "$f" in
-              *.img.gz|*.bin|*.trx) ;;
-              *) continue ;;
-            esac
-            [ -f "$f" ] || continue
-            [ "${first}" -eq 1 ] || printf ',\n'
-            first=0
-            printf '    {"name":"%s","size":%s,"sha256":"%s"}' \
-              "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
-          done
-          printf '\n  ]\n}\n'
-        } > versions.json
+        PUBKEY="${GITHUB_WORKSPACE}/build/Lede_source/files/etc/firmware-signing.pub"
+        [ -s "$PUBKEY" ] || { echo "::error::缺少验签公钥 $PUBKEY"; exit 1; }
+        [ -s sha256sums ] || { echo "::error::缺少 sha256sums"; exit 1; }
+        [ -s sha256sums.sig ] || { echo "::error::缺少 sha256sums.sig"; exit 1; }
+        [ -s versions.json ] || { echo "::error::缺少 versions.json"; exit 1; }
+        [ -s versions.json.sig ] || { echo "::error::缺少 versions.json.sig"; exit 1; }
+
+        # 清单必须可被仓库公钥验证 —— 防止 sign job 漏签/被替换后仍发布。
+        openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin -in sha256sums -sigfile sha256sums.sig >/dev/null \
+          || { echo "::error::sha256sums.sig 验签失败"; exit 1; }
+        openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin -in versions.json -sigfile versions.json.sig >/dev/null \
+          || { echo "::error::versions.json.sig 验签失败"; exit 1; }
+
+        sha256sum -c sha256sums --quiet
+        shopt -s nullglob
+        imgs=(*.img.gz)
+        legacy=(); uefi=()
+        for f in "${imgs[@]}"; do
+          case "$f" in
+            *-Legacy-*) legacy+=("$f") ;;
+            *-UEFI-*)   uefi+=("$f") ;;
+          esac
+        done
+        [ "${#imgs[@]}" -eq 2 ] || { echo "::error::签名产物应为 2 个 img.gz, 实际 ${#imgs[@]}"; exit 1; }
+        [ "${#legacy[@]}" -eq 1 ] || { echo "::error::Legacy 镜像应恰好 1 个"; exit 1; }
+        [ "${#uefi[@]}" -eq 1 ] || { echo "::error::UEFI 镜像应恰好 1 个"; exit 1; }
+        sigs=(*.img.gz.sha256.sig)
+        [ "${#sigs[@]}" -eq 2 ] || { echo "::error::应有 2 个 *.img.gz.sha256.sig, 实际 ${#sigs[@]}"; exit 1; }
+
+        jq -e '.channel == "AutoUpdate"' versions.json >/dev/null
+        [ "$(jq -r '.release' versions.json)" = "${VERSION_TAG}" ] || { echo "::error::versions.json release 与日期 tag 不一致"; exit 1; }
+        [ "$(jq '.assets | length' versions.json)" -eq 2 ] || { echo "::error::versions.json 资产数不是 2"; exit 1; }
+        for name in $(jq -r '.assets[].name' versions.json); do
+          [ -f "$name" ] || { echo "::error::versions.json 引用了不存在的资产 $name"; exit 1; }
+          want_size="$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .size' versions.json)"
+          want_sha="$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .sha256' versions.json)"
+          [ "$(stat -c %s "$name")" = "$want_size" ] || { echo "::error::$name 大小与 versions.json 不一致"; exit 1; }
+          [ "$(sha256sum "$name" | cut -d' ' -f1)" = "$want_sha" ] || { echo "::error::$name sha256 与 versions.json 不一致"; exit 1; }
+        done
+
+    - name: 校验版本索引
+      # 2026-10-31: versions.json 已由 sign job 生成并签名, publish 只校验、不再改写;
+      # 否则每次发布都会把签名覆盖成未签名的新文件。
+      run: |
+        set -euo pipefail
+        cd signed
+        [ -s versions.json ] || { echo "::error::缺少 versions.json(应由 sign job 生成)"; exit 1; }
         jq empty versions.json
-        echo "== versions.json 已生成: $(wc -c < versions.json) bytes =="
+        echo "== versions.json 校验通过: $(wc -c < versions.json) bytes =="
 
     - name: 发布可回滚日期 tag
       # 2026-10-29: 先发日期 tag, 再更新生产 AutoUpdate。
