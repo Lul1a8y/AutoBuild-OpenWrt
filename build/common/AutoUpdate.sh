@@ -5,6 +5,18 @@
 
 Version=V6.5
 
+# 2026-10-31(O5): /etc/CLOUD_Name 会被后续逻辑读取; 只接受安全字符, 防止 JSON 里的
+# 资产名把换行/重定向等带进这个文件。必须定义在 Shell_Helper 之前(-h 路径会用到)。
+write_cloud_name() {
+	[ -n "$1" ] || return 0
+	if [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		echo "$1" > /etc/CLOUD_Name
+	else
+		echo "!! 固件名含非法字符, 跳过写 /etc/CLOUD_Name: $1" >&2
+		return 1
+	fi
+}
+
 Shell_Helper() {
 echo
 echo
@@ -27,10 +39,10 @@ echo
 [[ -f /etc/CLOUD_Name ]] && {
 	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | sort | tail -n 1)" > /dev/null 2>&1
 } || {
-	wget -q --timeout=30 --tries=2 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1 || \
-	wget -q --timeout=30 --tries=2 ${Github_Tagstwo} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
-	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)" > /dev/null 2>&1
-	[[ ! -f /etc/CLOUD_Name ]] && [[ ${CLOUD_Name} ]] && echo "${CLOUD_Name}" > /etc/CLOUD_Name
+	wget -q --timeout=30 --tries=2 "${Github_Tags}" -O "${Download_Tags}" > /dev/null 2>&1 || \
+	wget -q --timeout=30 --tries=2 "${Github_Tagstwo}" -O "${Download_Tags}" > /dev/null 2>&1
+	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | sort | tail -n 1)" > /dev/null 2>&1
+	[[ ! -f /etc/CLOUD_Name ]] && write_cloud_name "${CLOUD_Name}"
 }
 echo -e "${Green}详细参数：
 
@@ -77,11 +89,34 @@ export Github_Tags="https://api.github.com/repos/${Apidz}/releases/tags/AutoUpda
 export Github_Tagstwo="${Github}/releases/download/AutoUpdate/Github_Tags"
 export Kernel="$(egrep -o "[0-9]+\.[0-9]+\.[0-9]+" /usr/lib/opkg/info/kernel.control)"
 export Overlay_Available="$(df -h | grep ":/overlay" | awk '{print $4}' | awk 'NR==1')"
-rm -rf "${Download_Path}" && export TMP_Available="$(df -m | grep "/tmp" | awk '{print $4}' | awk 'NR==1' | awk -F. '{print $1}')"
-[ ! -d "${Download_Path}" ] && mkdir -p ${Download_Path}
-opkg list | awk '{print $1}' > ${Download_Path}/Installed_PKG_List
+# 2026-10-31(O15): /tmp 是 1777, 固定目录名可被本地低权用户预创建为符号链接,
+# 让 root 的下载/校验/备份写到别处。改为 root 私有 0700 目录, 且拒绝符号链接/非 root 所有者。
+case "${Download_Path}" in
+	*[[:space:]]*) echo "!! Download_Path 含空白, 拒绝使用: ${Download_Path}" >&2; exit 1 ;;
+	/tmp/*) ;;
+	*) Download_Path="/tmp/Downloads" ;;
+esac
+rm -rf "${Download_Path}"
+[ -L "${Download_Path}" ] && { echo "!! ${Download_Path} 是符号链接, 拒绝使用" >&2; exit 1; }
+umask 077
+mkdir -p -m 700 "${Download_Path}" || { echo "!! 无法创建私有下载目录 ${Download_Path}" >&2; exit 1; }
+[ -O "${Download_Path}" ] && [ ! -L "${Download_Path}" ] || { echo "!! ${Download_Path} 所有者异常" >&2; exit 1; }
+export Download_Tags="${Download_Path}/Github_Tags"
+export TMP_Available="$(df -m | grep "/tmp" | awk '{print $4}' | awk 'NR==1' | awk -F. '{print $1}')"
+opkg list | awk '{print $1}' > "${Download_Path}/Installed_PKG_List"
 export PKG_List="${Download_Path}/Installed_PKG_List"
 export AutoUpdate_Log_Path="/tmp"
+# 2026-10-31(O15): 手动通道原来没有锁。与包内 /usr/bin/AutoUpdate 共用同一个锁文件,
+# 避免 cron 升级与手动执行同时跑 sysupgrade -b/-f。
+if command -v flock >/dev/null 2>&1; then
+	exec 9>>"/tmp/autoupgrade.lock" || { echo "!! 无法打开升级锁" >&2; exit 1; }
+	flock -n 9 || { echo "!! 已有升级任务在运行, 退出" >&2; exit 1; }
+else
+	LOCK_DIR="/tmp/autoupgrade.lock.d"
+	mkdir "${LOCK_DIR}" 2>/dev/null || { echo "!! 已有升级任务在运行, 退出" >&2; exit 1; }
+	trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
+fi
+
 GET_PID() {
 	local Result
 	while [[ $1 ]];do
@@ -272,13 +307,13 @@ fi
 [[ -z ${CURRENT_Version} ]] && TIME r "本地固件版本获取失败,请检查/bin/openwrt_info文件的值!" && exit 1
 [[ -z ${Github} ]] && TIME r "Github地址获取失败,请检查/bin/openwrt_info文件的值!" && exit 1
 TIME g "正在获取云端固件版本信息..."
-[ ! -d ${Download_Path} ] && mkdir -p ${Download_Path}
-wget -q --timeout=30 --tries=1 ${Github_Tags} -O ${Download_Tags} > /dev/null 2>&1
+[ -d "${Download_Path}" ] || mkdir -p "${Download_Path}"
+wget -q --timeout=30 --tries=1 "${Github_Tags}" -O "${Download_Tags}" > /dev/null 2>&1
 if [[ $? -ne 0 ]];then
-	wget -q --timeout=60 --tries=3 ${Github_Tags} -O ${Download_Path}/Github_Tags > /dev/null 2>&1
+	wget -q --timeout=60 --tries=3 "${Github_Tags}" -O "${Download_Path}/Github_Tags" > /dev/null 2>&1
 	if [[ $? -ne 0 ]];then
 		TIME y "GitHub API 获取失败, 尝试 release 资产 Github_Tags..."
-		wget -q --timeout=60 --tries=3 ${Github_Tagstwo} -O ${Download_Tags} > /dev/null 2>&1
+		wget -q --timeout=60 --tries=3 "${Github_Tagstwo}" -O "${Download_Tags}" > /dev/null 2>&1
 		if [[ $? -ne 0 ]];then
 			TIME r "获取固件版本信息失败,请检测网络,或者您更改的Github地址为无效地址,或者您的仓库是私库,或者发布已被删除!"
 			echo
@@ -287,9 +322,9 @@ if [[ $? -ne 0 ]];then
 	fi
 fi
 TIME g "正在比对云端固件和本地安装固件版本..."
-export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
-export CLOUD_sion="$(echo ${CLOUD_Firmware} | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+")"
-export CLOUD_Version="$(echo ${CLOUD_Firmware} | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+${BOOT_Type}")"
+export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | sort | tail -n 1)"
+export CLOUD_sion="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+")"
+export CLOUD_Version="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+${BOOT_Type}")"
 [[ -z "${CLOUD_Version}" ]] && {
 	TIME r "比对固件版本失败!"
 	exit 1
@@ -299,10 +334,20 @@ export CLOUD_Version="$(echo ${CLOUD_Firmware} | egrep -o "${REPO_Name}-${DEFAUL
 	echo -e "\nCURRENT_Version=${CURRENT_Version}" >> /tmp/Version_Tags
 	exit 0
 }
-export Firmware_Name="$(echo ${CLOUD_Firmware} | egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"
+export Firmware_Name="$(echo "${CLOUD_Firmware}" | egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"
 export Firmware="${CLOUD_Firmware}"
-export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CLOUD_sion}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" ${Download_Tags} | sort | tail -n 1)"
-[[ ${CLOUD_Name} ]] && echo "${CLOUD_Name}" > /etc/CLOUD_Name
+# 2026-10-31(O5): 资产名来自 release JSON, 后面会参与 wget -O / md5sum / chmod / sysupgrade。
+# egrep 已经限制了字符集, 这里再做一次显式白名单: 不在本固件命名空间, 或含 . / 之外字符, 直接中止。
+[[ -n "${Firmware}" ]] || { TIME r "云端固件名为空, 已中止"; echo; exit 1; }
+case "${Firmware}" in
+	"${Egrep_Firmware}-"*"${Firmware_SFX}") ;;
+	*) TIME r "云端固件名不在预期命名空间: ${Firmware}"; echo; exit 1 ;;
+esac
+if ! [[ "${Firmware}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+	TIME r "云端固件名含非法字符, 已中止: ${Firmware}"; echo; exit 1
+fi
+export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CLOUD_sion}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | sort | tail -n 1)"
+write_cloud_name "${CLOUD_Name}" || CLOUD_Name=""
 # 2026-10-27: 原来用 grep -n "${Firmware}" 取最后一行再回退 4 行, 按位置猜体积。
 # GitHub API 给每个资产加了 "digest" 字段后资产在 JSON 里的行数变了: tail -1 命中
 # 下载地址行, X-4 落到 "digest" 行 -> 体积恒为 0, 空间检查形同虚设(日志还打印 0M)。
@@ -310,6 +355,9 @@ CLOUD_Firmware_Size="$(jq -r --arg n "${Firmware}" '[.assets[]|select(.name==$n)
 [[ "${CLOUD_Firmware_Size}" =~ ^[0-9]+$ ]] || CLOUD_Firmware_Size=0
 if [[ "${CLOUD_Firmware_Size}" -gt 0 ]]; then
 	CLOUD_Firmware_Size=$(( (CLOUD_Firmware_Size + 1048575) / 1048576 ))
+	# 2026-10-31(O11): 升级前还要 sysupgrade -b 写备份; keep.d 里含 36MB 的
+	# /usr/bin/AdGuardHome, 旧检查只算镜像大小。多留 64MB, 避免下载完才发现备份写不下。
+	CLOUD_Firmware_Size=$(( CLOUD_Firmware_Size + 64 ))
 else
 	TIME g "未能从 API 取得固件体积, 跳过 tmp 空间检查"
 fi
@@ -377,7 +425,7 @@ echo "固件格式：${Firmware_SFX}"
 echo "固件名称：${Firmware}"
 echo "下载保存：${Download_Path}"
 echo "固件体积：${CLOUD_Firmware_Size}M"
-cd ${Download_Path}
+cd "${Download_Path}"
 # 2026-10-24: 原来整段下载被 `Installed_PKG_List =~ curl` 门控且没有 else ——
 # 精简配置里去掉 OpenClash 后 curl 不存在, 就完全不下固件, 随后在 .sha256 那一步报"未取得清单"。
 # 改成无条件下载; curl 只用来判断是否处于代理环境, 仅影响提示文案。
@@ -387,9 +435,9 @@ if [ "${Google_Check}" = "301" ]; then
 else
 	TIME g "正在下载云端固件,请耐心等待..."
 fi
-wget -q --no-check-certificate --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O ${Firmware}
+wget -q --no-check-certificate --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O "${Firmware}"
 if [[ $? -ne 0 ]];then
-	wget -q --no-check-certificate --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O ${Firmware}
+	wget -q --no-check-certificate --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O "${Firmware}"
 	if [[ $? -ne 0 ]];then
 		TIME r "下载云端固件失败,请尝试手动安装!"
 		echo
@@ -460,8 +508,8 @@ if ! openssl pkeyutl -verify -pubin -inkey "${SIGN_PUB}" -rawin -in "${Download_
 fi
 TIME g "固件签名校验通过"
 
-export CLOUD_MD5=$(md5sum ${Firmware} | cut -c1-4)
-export CLOUD_256=$(sha256sum ${Firmware} | cut -c4-11)
+export CLOUD_MD5=$(md5sum "${Firmware}" | cut -c1-4)
+export CLOUD_256=$(sha256sum "${Firmware}" | cut -c4-11)
 export MD5_256=$(echo ${Firmware} | egrep -o "[a-zA-Z0-9]+${Firmware_SFX}" | sed -r "s/(.*)${Firmware_SFX}/\1/")
 export CURRENT_MD5="$(echo "${MD5_256}" | cut -c1-4)"
 export CURRENT_256="$(echo "${MD5_256}" | cut -c5-)"
@@ -473,7 +521,7 @@ export CURRENT_256="$(echo "${MD5_256}" | cut -c5-)"
 	TIME r "SHA256对比失败,固件可能在下载时损坏,请检查网络后重试!"
 	exit 1
 }
-chmod +x ${Firmware}
+chmod +x "${Firmware}"
 TIME g "准备更新固件,更新期间请不要断开电源或重启设备 ..."
 [[ "${Input_Other}" == "-t" ]] && {
 	TIME z "测试模式运行完毕!"
@@ -504,9 +552,9 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	#   原来失败兜底写的是 sysupgrade -q, 注释还说是"不保留配置" —— -q 只是静默, -n 才不保留配置。
 	#   这里改成裸 sysupgrade: 备份都做不出来时, 让 sysupgrade 用自己的自动备份并如实报错,
 	#   而不是假装配置已经被保住了。
-	if ( umask 077; sysupgrade -b /tmp/back.tar.gz ); then
-		chmod 600 /tmp/back.tar.gz 2>/dev/null || true
-		export Upgrade_Options="sysupgrade -f /tmp/back.tar.gz"
+	if ( umask 077; sysupgrade -b "${Download_Path}/back.tar.gz" ); then
+		chmod 600 "${Download_Path}/back.tar.gz" 2>/dev/null || true
+		export Upgrade_Options="sysupgrade -f ${Download_Path}/back.tar.gz"
 	else
 		export Upgrade_Options="sysupgrade"
 	fi
