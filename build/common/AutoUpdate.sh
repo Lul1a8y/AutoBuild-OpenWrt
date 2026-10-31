@@ -17,6 +17,25 @@ write_cloud_name() {
 	fi
 }
 
+# 2026-10-31(O9): 资产名里的时间戳是 12 位数字, 但整串按字典序排序并不等于
+# 版本顺序(前缀/启动类型/哈希都会参与比较)。先抽出时间戳做数值排序, 再输出
+# 原资产名; 没有时间戳时退回原来的字典序, 兼容非本仓库命名的资产。
+select_latest_firmware() {
+	local data selected
+	data="$(cat)"
+	selected="$(printf '%s\n' "${data}" | awk -F- '
+		{
+			for (i = 1; i <= NF; i++) {
+				if (length($i) == 12 && $i ~ /^[0-9]+$/) {
+					print $i "\t" $0
+					break
+				}
+			}
+		}' | sort -n | tail -n 1 | cut -f2-)"
+	[ -n "${selected}" ] || selected="$(printf '%s\n' "${data}" | sort | tail -n 1)"
+	printf '%s\n' "${selected}"
+}
+
 Shell_Helper() {
 echo
 echo
@@ -37,11 +56,11 @@ echo -e "${Purple}
 ${White}"
 echo
 [[ -f /etc/CLOUD_Name ]] && {
-	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | sort | tail -n 1)" > /dev/null 2>&1
+	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | select_latest_firmware)" > /dev/null 2>&1
 } || {
 	wget -q --timeout=30 --tries=2 "${Github_Tags}" -O "${Download_Tags}" > /dev/null 2>&1 || \
 	wget -q --timeout=30 --tries=2 "${Github_Tagstwo}" -O "${Download_Tags}" > /dev/null 2>&1
-	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | sort | tail -n 1)" > /dev/null 2>&1
+	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | select_latest_firmware)" > /dev/null 2>&1
 	[[ ! -f /etc/CLOUD_Name ]] && write_cloud_name "${CLOUD_Name}"
 }
 echo -e "${Green}详细参数：
@@ -336,7 +355,7 @@ if [[ $? -ne 0 ]];then
 	fi
 fi
 TIME g "正在比对云端固件和本地安装固件版本..."
-export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | sort | tail -n 1)"
+export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | select_latest_firmware)"
 export CLOUD_sion="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+")"
 export CLOUD_Version="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+${BOOT_Type}")"
 [[ -z "${CLOUD_Version}" ]] && {
@@ -360,8 +379,11 @@ esac
 if ! [[ "${Firmware}" =~ ^[A-Za-z0-9._-]+$ ]]; then
 	TIME r "云端固件名含非法字符, 已中止: ${Firmware}"; echo; exit 1
 fi
-export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CLOUD_sion}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | sort | tail -n 1)"
-write_cloud_name "${CLOUD_Name}" || CLOUD_Name=""
+export CLOUD_Name="$(egrep -o "${LUCI_Name}-${CLOUD_sion}${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | select_latest_firmware)"
+# 2026-10-31(O10): -t 只做流程演练, 不应把云端资产名落盘到 /etc/CLOUD_Name。
+if [[ "${Input_Other}" != "-t" ]]; then
+	write_cloud_name "${CLOUD_Name}" || CLOUD_Name=""
+fi
 # 2026-10-27: 原来用 grep -n "${Firmware}" 取最后一行再回退 4 行, 按位置猜体积。
 # GitHub API 给每个资产加了 "digest" 字段后资产在 JSON 里的行数变了: tail -1 命中
 # 下载地址行, X-4 落到 "digest" 行 -> 体积恒为 0, 空间检查形同虚设(日志还打印 0M)。

@@ -182,6 +182,22 @@ fi
 if [ -d "$AU_PKG" ]; then
 [ -f "$AU_BIN" ] || { echo "!! 找不到 ${AU_BIN}(luci-app-autoupdate 结构变了?), 升级验签补丁没地方打"; exit 1; }
 
+# 2026-10-31(BUILD-1): AutoUpdate 的验签/运行路径直接调用 /usr/bin/openssl,
+# 但 luci-app-autoupdate 的 LUCI_DEPENDS 没声明 openssl-util。构建期检查只能
+# 证明工具链里有, 不能保证目标镜像装上; 这里把依赖补进包元数据并回读断言。
+AU_MAKE="$AU_PKG/Makefile"
+[ -f "$AU_MAKE" ] || { echo "!! 找不到 ${AU_MAKE}, 无法补 openssl-util 依赖"; exit 1; }
+grep -q '^LUCI_DEPENDS:=' "$AU_MAKE" || {
+  echo "!! ${AU_MAKE} 缺少 LUCI_DEPENDS, 无法补 openssl-util 依赖"; exit 1
+}
+if ! grep -q '^LUCI_DEPENDS:=.*+openssl-util' "$AU_MAKE"; then
+  sed -i 's/^LUCI_DEPENDS:=/LUCI_DEPENDS:=+openssl-util /' "$AU_MAKE"
+fi
+grep -q '^LUCI_DEPENDS:=.*+openssl-util' "$AU_MAKE" || {
+  echo "!! luci-app-autoupdate 的 LUCI_DEPENDS 未包含 openssl-util"; exit 1
+}
+echo "== luci-app-autoupdate 已声明 openssl-util 依赖 =="
+
 # 2026-10-31: LuCI 检查/升级按钮会 `rm -f ... /tmp/autoupgrade.*`, 这个通配把
 # AutoUpdate 自己的 flock 锁文件(/tmp/autoupgrade.lock)也删了。锁的是 inode, 删掉后
 # 新进程会新建一个 inode 再拿到锁 —— cron 正在升级时点「检查」, 就会再起一个
@@ -472,15 +488,22 @@ echo "== 包内 AutoUpdate 已补空间字段校验和绝对 tmp 路径 =="
 # 2026-10-28: 包内脚本挑云端固件是 `grep -E "$regex" "$tmpapi_version" | tail -n 1`,
 #   同样依赖 GitHub 按上传顺序返回资产。手工补传一个旧版本做回滚时, 它会被选中,
 #   设备拿旧版本比较 → 走 -lt 分支 → cron 无人值守时 read 读到空输入直接 exit 0,
-#   自动更新从此静默停摆且不报错。改成先把固件名抽出来再排序取最大
-#   (固件名等宽, 字典序即时间序); 不能直接对 JSON 原文行排序, 那样会打乱整行。
+#   自动更新从此静默停摆且不报错。改成先把固件名抽出来再排序取最大。
+# 2026-10-31(O9): 不能按整串字典序(前缀/启动类型/哈希都会参与比较)。抽出 12 位
+#   时间戳做数值排序; 没有时间戳时才退回字典序。兼容已经打过旧 patch 的缓存。
 # 2026-10-29: 只锚定 target_line= 这一行, 不再替换全文件所有 `| tail -n 1)`。
 #   旧写法在上游出现第二处 `| tail -n 1)` 时会把无关代码改坏, 而 sh -n 抓不到。
 TARGET_ORIG='    target_line=$(grep -E "$regex" "$tmpapi_version" | tail -n 1)'
-TARGET_PATCH='    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)'
+TARGET_OLD_PATCH='    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)'
+TARGET_PATCH="$(cat <<'TARGET_PATCH_EOF'
+    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | awk -F- '{for(i=1;i<=NF;i++){if(length($i)==12 && $i ~ /^[0-9]+$/){print $i " " $0; break}}}' | sort -n | tail -n 1 | cut -d' ' -f2-)
+TARGET_PATCH_EOF
+)"
 ORIG_COUNT="$(grep -Fxc "$TARGET_ORIG" "$AU_BIN" || true)"
-if [ "${ORIG_COUNT}" -gt 1 ]; then
-  echo "!! 包内 AutoUpdate 有 ${ORIG_COUNT} 处 target_line=...| tail -n 1), 无法安全锚定"
+OLD_COUNT="$(grep -Fxc "$TARGET_OLD_PATCH" "$AU_BIN" || true)"
+if [ "${ORIG_COUNT}" -gt 1 ] || [ "${OLD_COUNT}" -gt 1 ] || \
+   { [ "${ORIG_COUNT}" -eq 1 ] && [ "${OLD_COUNT}" -eq 1 ]; }; then
+  echo "!! 包内 AutoUpdate 的 target_line 锚点不唯一(orig=${ORIG_COUNT}, old=${OLD_COUNT})"
   exit 1
 fi
 if [ "${ORIG_COUNT}" -eq 1 ]; then
@@ -488,13 +511,18 @@ if [ "${ORIG_COUNT}" -eq 1 ]; then
     !done && $0 == orig { print patched; done=1; next }
     { print }
   ' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
+elif [ "${OLD_COUNT}" -eq 1 ]; then
+  awk -v orig="$TARGET_OLD_PATCH" -v patched="$TARGET_PATCH" '
+    !done && $0 == orig { print patched; done=1; next }
+    { print }
+  ' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
 fi
 PATCHED_COUNT="$(grep -Fxc "$TARGET_PATCH" "$AU_BIN" || true)"
 [ "${PATCHED_COUNT}" -eq 1 ] || {
-  echo "!! 包内 AutoUpdate 未按版本取最大(上游改写? target_line 锚点没命中)"
+  echo "!! 包内 AutoUpdate 未按时间戳数值取最大(上游改写? target_line 锚点没命中)"
   exit 1
 }
-echo "== 包内 AutoUpdate 改为按版本取最大, 不再依赖资产返回顺序 =="
+echo "== 包内 AutoUpdate 改为按时间戳数值取最大, 不再依赖资产返回顺序 =="
 
 # 2026-10-29: 删除原来的“Remote_download 版本守卫”。钉住的 04f2a37 里
 # Remote_information 对 LOCAL == / > CLOUD 已调用 TIME z(exit 0), -u/-k 根本
