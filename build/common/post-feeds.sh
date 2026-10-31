@@ -496,7 +496,7 @@ echo "== 包内 AutoUpdate 已补空间字段校验和绝对 tmp 路径 =="
 TARGET_ORIG='    target_line=$(grep -E "$regex" "$tmpapi_version" | tail -n 1)'
 TARGET_OLD_PATCH='    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)'
 TARGET_PATCH="$(cat <<'TARGET_PATCH_EOF'
-    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | awk -F- '{for(i=1;i<=NF;i++){if(length($i)==12 && $i ~ /^[0-9]+$/){print $i " " $0; break}}}' | sort -n | tail -n 1 | cut -d' ' -f2-)
+    target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | awk -F- '{for(i=1;i<=NF;i++){if(length($i)==12 && $i ~ /^[0-9]+$/){print $i " " $0; break}}}' | sort -n | tail -n 1 | cut -d' ' -f2-); [ -n "$target_line" ] || target_line=$(grep -E "$regex" "$tmpapi_version" | grep -Eo "${LUCI_EDITION}-${SOURCE}-${DEVICE_MODEL}-[0-9]+-${BOOT_TYPE}-.*${FIRMWARE_SUFFIX}" | sort | tail -n 1)
 TARGET_PATCH_EOF
 )"
 ORIG_COUNT="$(grep -Fxc "$TARGET_ORIG" "$AU_BIN" || true)"
