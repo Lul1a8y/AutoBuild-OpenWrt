@@ -565,7 +565,12 @@ jobs:
             } | sha256sum | awk '{print $1}'
           )"
         else
-          TOOLCHAIN_FP="unknown"
+          echo "::error::缺少 ${SRC_DIR}/.config 或 settings.ini, 拒绝计算 toolchain 指纹"
+          exit 1
+        fi
+        if ! [[ "${TOOLCHAIN_FP}" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::toolchain 指纹计算失败(期望 64 位十六进制): ${TOOLCHAIN_FP:-<empty>}"
+          exit 1
         fi
         echo "TOOLCHAIN_FP=$TOOLCHAIN_FP" >> "$GITHUB_ENV"
         echo "fp=$TOOLCHAIN_FP" >> "$GITHUB_OUTPUT"
@@ -682,7 +687,10 @@ jobs:
         # 文件也会让 toolchain 全冷编。单独算 TOOLCHAIN_FP。
         # toolchain 指纹已在「计算 toolchain 缓存键」步骤写入 GITHUB_ENV;
         # 缓存 key 与这里的校验共用同一份指纹, 避免两套算法漂移。
-        TOOLCHAIN_FP="${TOOLCHAIN_FP:-unknown}"
+        if ! [[ "${TOOLCHAIN_FP:-}" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::TOOLCHAIN_FP 缺失或非法, 拒绝把 unknown/空值当成可信命中: ${TOOLCHAIN_FP:-<empty>}"
+          exit 1
+        fi
         echo "== 本次 toolchain 指纹: ${TOOLCHAIN_FP:0:16} =="
         SD="/${{ matrix.target }}/openwrt/staging_dir"
         BD="/${{ matrix.target }}/openwrt/build_dir"
@@ -801,6 +809,10 @@ jobs:
           make -j$(nproc) V=s 2>&1 | tee -a build.log
         }
         # 2026-10-17: 指纹写进 staging_dir(随缓存一起保存), 供下次 restore-keys 部分命中时比对
+        if ! [[ "${TOOLCHAIN_FP:-}" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::编译结束但 TOOLCHAIN_FP 非法, 拒绝写入可信指纹: ${TOOLCHAIN_FP:-<empty>}"
+          exit 1
+        fi
         echo "${CACHE_FP}" > staging_dir/.hermes-build-fingerprint
         echo "${TOOLCHAIN_FP}" > staging_dir/.hermes-toolchain-fingerprint
         echo "status=success" >> $GITHUB_ENV
