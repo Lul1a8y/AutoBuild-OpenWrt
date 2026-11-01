@@ -18,6 +18,8 @@ env:
   # 2026-10-09: REPO_TOKEN 不再全局注入 —— 只在真正需要写权限的步骤用 step-level env 传;
   # if 条件改用下面按 secrets 计算的 HAS_REPO_TOKEN 判断(原先是每个 step 都能拿到可写 token)
   TZ: Asia/Shanghai
+  # 2026-11-01: 限制 ccache 体积, 避免和 dl/包缓存一起超过 GitHub 单仓库 10GB 配额。
+  CCACHE_MAXSIZE: 2G
 
 # 2026-10-09: 默认 GITHUB_TOKEN 收窄为只读(发布/上传走 repo 级 PAT, 不受此影响)
 permissions:
@@ -222,9 +224,10 @@ jobs:
         df -hT $PWD
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /${{matrix.target}}
-        sudo chown $USER:$GROUPS /${{matrix.target}}
+        sudo chown "$USER:$(id -gn "$USER")" /${{matrix.target}}
 
     - name: 下载源码
+      id: source
       working-directory: /${{matrix.target}}
       run: |
         git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" openwrt
@@ -245,8 +248,22 @@ jobs:
         ln -sf /${{matrix.target}}/openwrt $GITHUB_WORKSPACE/openwrt
         echo "Home=${GITHUB_WORKSPACE}/openwrt" >> $GITHUB_ENV
         echo "PATH1=${GITHUB_WORKSPACE}/openwrt/build/${{matrix.target}}" >> $GITHUB_ENV
+        # 2026-11-01: 缓存 key 需要主源码 commit; 上游 bump 时让 toolchain/dl 缓存
+        # 与新源码显式关联, 不再靠宽前缀命中旧 staging。
+        SOURCE_SHA="$(git rev-parse HEAD)"
+        echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
+        echo "sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+        # 2026-11-01: 包缓存必须和 feed HEAD 对齐, 否则上游 feed 更新后仍可能命中旧包。
+        FEEDS_FP="$(
+          for d in feeds/*; do
+            [ -d "$d/.git" ] || continue
+            printf '%s %s\n' "$d" "$(git -C "$d" rev-parse HEAD 2>/dev/null || true)"
+          done | sort | sha256sum | awk '{print $1}'
+        )"
+        echo "feeds=${FEEDS_FP}" >> "$GITHUB_OUTPUT"
 
     - name: 加载设置
+      id: diy
       env:
         # 2026-10-09: OpenClash 面板密码不再入库(public 仓库里明文=已泄露) —— 构建时注入:
         # 仓库 secret OPENCLASH_DASH_PASS 优先; 未配置则本次随机生成(可在路由器上 uci get 读取)
@@ -286,25 +303,31 @@ jobs:
           grep -q 'CHANGE_ME_BUILD_TIME' "$OC_CFG" && { echo "!! openclash 配置残留占位密码"; exit 1; }
           echo "== OpenClash 面板密码注入完成 =="
         fi
-        cp -Rf `find ./ -maxdepth 1 -type d ! -path './openwrt' ! -path './.git' ! -path './'` openwrt
+        find ./ -maxdepth 1 -type d ! -path './openwrt' ! -path './.git' ! -path './' -exec cp -Rf {} openwrt \;
         mv -f "${Home}"/build/common/*.sh "${PATH1}"
         # 2026-10-09: feeds 之后的修补统一在 post-feeds.sh(单一定义, 幂等); 未就位即中止, 不留静默缺口
         [ -f "${PATH1}/post-feeds.sh" ] || { echo "!! post-feeds.sh 未随 build/common/*.sh 就位"; exit 1; }
-        source "${PATH1}/common.sh" && Diy_settings
+        source "${PATH1}/common.sh"
+        Diy_settings
         # 2026-10-28: 原来这里读取 github.event.inputs.ssh, 但 workflow_dispatch 没有定义
         # ssh 输入, 也没有对应的 SSH 步骤 —— 是死引用(actionlint 会报 property "ssh" 未定义)。
         # 需要 SSH 调试时再单独加 inputs.ssh + tmate/ssh 步骤; 现在先删掉误导性代码。
         cd openwrt
         if [[ "${REPO_BRANCH}" == "master" ]]; then
-          source "${PATH1}/common.sh" && Diy_lede
+          source "${PATH1}/common.sh"
+          Diy_lede
         elif [[ "${REPO_BRANCH}" == "19.07" ]]; then
-          source "${PATH1}/common.sh" && Diy_lienol
+          source "${PATH1}/common.sh"
+          Diy_lienol
         elif [[ "${REPO_BRANCH}" == "openwrt-18.06" ]]; then
-          source "${PATH1}/common.sh" && Diy_Tianling
+          source "${PATH1}/common.sh"
+          Diy_Tianling
         elif [[ "${REPO_BRANCH}" == "openwrt-21.02" ]]; then
-          source "${PATH1}/common.sh" && Diy_mortal
+          source "${PATH1}/common.sh"
+          Diy_mortal
         fi
-        source "${PATH1}/common.sh" && Diy_all
+        source "${PATH1}/common.sh"
+        Diy_all
         /bin/bash "${PATH1}/$DIY_PART_SH"
         # 2026-10-17: 删掉这里的重复 feeds update —— 全程没有任何地方改 feeds.conf(已核), 上一次
         # update(下载源码步骤)已把 feed 拉到最新; 此处再 update 只会在 diy-part 打完补丁后再 git pull
@@ -323,8 +346,17 @@ jobs:
         bash "${PATH1}/post-feeds.sh"
 
         if [[ "${REGULAR_UPDATE}" == "true" ]]; then
-          source "${PATH1}/upgrade.sh" && Diy_Part1
+          source "${PATH1}/upgrade.sh"
+          Diy_Part1
         fi
+        # 2026-11-01: 第三方包仓是 tip clone, 不在 feeds/ 里; 包缓存必须跟它们的 HEAD 对齐。
+        PKG_SRC_FP="$(
+          for d in package/kenzok8 package/kenzok8-small package/openclash package/helloworld; do
+            [ -d "$d/.git" ] || continue
+            printf '%s %s\n' "$d" "$(git -C "$d" rev-parse HEAD 2>/dev/null || true)"
+          done | sort | sha256sum | awk '{print $1}'
+        )"
+        echo "pkg_src=${PKG_SRC_FP}" >> "$GITHUB_OUTPUT"
 
     - name: 校验 OTA 依赖(公钥 + openssl)
       # 2026-10-31(O3): AutoUpdate 验签硬依赖 /etc/firmware-signing.pub 与 /usr/bin/openssl。
@@ -375,7 +407,8 @@ jobs:
     - name: 生成配置
       run: |
         cd openwrt
-        source "${PATH1}/common.sh" && Diy_chajian > /dev/null 2>&1
+        source "${PATH1}/common.sh"
+        Diy_chajian > /dev/null
         # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
         make defconfig || { echo "!! make defconfig 失败"; exit 1; }
         # 2026-10-29: 必须同时产出 BIOS(Legacy combined) 和 EFI 镜像。
@@ -387,6 +420,8 @@ jobs:
             exit 1
           }
         done
+        # ccache 是可选的构建加速; 被 defconfig 丢掉时只告警, 不阻断出包。
+        grep -q '^CONFIG_CCACHE=y$' .config || echo "::warning::CONFIG_CCACHE 未保留, 本次不会使用 ccache"
         # 2026-10-21: 防"包被静默跳过"。buildroot 只收录 Makefile 里含 "call BuildPackage"
         # 字样的包(include/scan.mk), 缺了就不进 tmp/.packageinfo, .config 写 =y 也没用、
         # 不报错、固件里就是没有 —— 10-20 那版 ADH 就是这么消失的。
@@ -470,7 +505,8 @@ jobs:
     - name: 编译信息
       run: |
         cd openwrt
-        source "${PATH1}/common.sh" && Diy_chuli > /dev/null 2>&1
+        source "${PATH1}/common.sh"
+        Diy_chuli > /dev/null
         # 2026-10-29: nanopi/armvirt 不支持 OTA。原逻辑在 Diy_xinxi 里改 shell 变量，
         # 那时 Diy_Part2 已跑完，等于无效；这里在复制 AutoUpdate 之前生效，并写回 GITHUB_ENV。
         if [[ "${TARGET_PROFILE}" =~ (friendlyarm_nanopi-r2s|friendlyarm_nanopi-r4s|armvirt) ]]; then
@@ -478,23 +514,37 @@ jobs:
           echo "REGULAR_UPDATE=false" >> "$GITHUB_ENV"
         fi
         if [ "${REGULAR_UPDATE}" == "true" ]; then
-          source "${PATH1}/upgrade.sh" && Diy_Part2 > /dev/null 2>&1
+          source "${PATH1}/upgrade.sh"
+          Diy_Part2 > /dev/null
         fi
         if [ "${BY_INFORMATION}" == "true" ]; then
-          source "${PATH1}/upgrade.sh" && GET_TARGET_INFO
-          source "${PATH1}/common.sh" && Diy_xinxi
+          source "${PATH1}/upgrade.sh"
+          GET_TARGET_INFO
+          source "${PATH1}/common.sh"
+          Diy_xinxi
           # 2026-10-17: 删掉 chmod -R 755 .(整树递归改权限, 上万文件 + 抹掉可执行位差异);
           # Diy_xinxi 只 echo 编译信息、不写任何文件(已核 common.sh 全文), 不需要兜权限。
         fi
     - name: 电报通知
       if: env.SERVERCHAN_SCKEY == 'true'
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
         cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c > CPU
         cat /proc/cpuinfo | grep "cpu cores" | uniq >> CPU
         sed -i 's|[[:space:]]||g; s|^.||' CPU && sed -i 's|CPU||g; s|pucores:||' CPU
         CPUNAME="$(awk 'NR==1' CPU)" && CPUCORES="$(awk 'NR==2' CPU)"
-        curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=🔔 您正在使用【${CPUNAME} CPU】【${CPUCORES}核心】【${CODE}】源码 编译固件中,请耐心等待...... ⏳" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-          || echo "::warning::电报通知发送失败(不影响固件与发布)"
+        if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
+          echo "::warning::Telegram secret 未配置, 跳过通知"
+          exit 0
+        fi
+        # 2026-11-01: token 不再出现在 curl argv/URL 命令行里; 用 --config - 从 stdin 读取。
+        curl --silent --show-error --fail --config - \
+          --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+          --data-urlencode "text=🔔 您正在使用【${CPUNAME} CPU】【${CPUCORES}核心】【${CODE}】源码 编译固件中,请耐心等待...... ⏳" <<EOF || echo "::warning::电报通知发送失败(不影响固件与发布)"
+        url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+        EOF
 
     - name: 加载缓存
       id: cache
@@ -512,16 +562,46 @@ jobs:
         # protobuf@v1.36.11 缺 internal/editiondefaults → "no required module provides package"。
         # 这类缓存无法在 restore 时校验完整性, 一旦坏掉会以"某个 go 包编译失败"的形式反复出现,
         # 且每次都白白烧掉 2-3 小时。模组重新下载只需几分钟, 用确定性换这点时间划算。
+        # 2026-11-01: 只缓存 dl + toolchain/host + 指纹; 不再缓存 target staging/build_dir。
+        # 旧 v2 缓存里的 target 产物会和新源码/新 feed 混用, 换 v3 前缀并只回退 v3。
         path: |
           /${{ matrix.target }}/openwrt/dl
           !/${{ matrix.target }}/openwrt/dl/go-mod-cache
-          /${{ matrix.target }}/openwrt/staging_dir
-        # 2026-10-31: key 加 v2 版本前缀(PRF-06)。restore-keys 仍保留宽前缀:
-        # go-mod-cache 已从缓存路径排除, toolchain 还有 .hermes-toolchain-fingerprint 二次校验,
-        # 所以宽前缀只用于复用 dl/, 不会再让坏 toolchain 直接命中。
-        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-v2-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target)) }}
+          /${{ matrix.target }}/openwrt/staging_dir/toolchain-*
+          /${{ matrix.target }}/openwrt/staging_dir/host
+          /${{ matrix.target }}/openwrt/staging_dir/hostpkg
+          /${{ matrix.target }}/openwrt/staging_dir/.hermes-build-fingerprint
+          /${{ matrix.target }}/openwrt/staging_dir/.hermes-toolchain-fingerprint
+          /${{ matrix.target }}/openwrt/build_dir/toolchain-*
+          /${{ matrix.target }}/openwrt/build_dir/host
+          /${{ matrix.target }}/openwrt/build_dir/hostpkg
+        # 2026-11-01: 主源码 commit 进入 key; target staging 已移出缓存, 所以宽前缀只复用
+        # dl/toolchain, 不会再把旧包 .o/.a 带进新构建。
+        key: ${{ runner.os }}-${{ matrix.target }}-openwrt-v3-${{ steps.source.outputs.sha }}-${{ hashFiles(format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target)) }}
         restore-keys: |
-          ${{ runner.os }}-${{ matrix.target }}-openwrt-
+          ${{ runner.os }}-${{ matrix.target }}-openwrt-v3-
+
+    - name: 加载 ccache
+      # 2026-11-01: ccache 是编译缓存, 不改变选包/固件内容; 每次 run 保存一份,
+      # 用前缀恢复最近一份。GitHub cache 7 天不用即过期, 对半个月~一个月一次的
+      # 正式构建基本无感, 主要用于当前连续修 bug 的日常构建。
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: /${{ matrix.target }}/openwrt/.ccache
+        key: ${{ runner.os }}-${{ matrix.target }}-ccache-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.target }}-ccache-
+
+    - name: 加载包缓存(仅精确 key)
+      # 2026-11-01: target staging/build_dir 容易和新源码/feed 混用, 不能走宽前缀恢复。
+      # 只有 source SHA + feed HEAD + 配置/补丁/文件全部一致才恢复, 否则保持空目录冷编。
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          /${{ matrix.target }}/openwrt/staging_dir/target-*
+          /${{ matrix.target }}/openwrt/build_dir/target-*
+        key: ${{ runner.os }}-${{ matrix.target }}-pkg-${{ steps.source.outputs.sha }}-${{ steps.source.outputs.feeds }}-${{ steps.diy.outputs.pkg_src }}-${{ hashFiles('SOURCE_EXTRA.txt', format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target), format('build/{0}/patches/**', matrix.target), format('build/{0}/files/**', matrix.target)) }}
+        # 故意不写 restore-keys: 包产物只能精确复用。
 
     - name: 判断缓存复用
       id: cachecheck
@@ -531,8 +611,8 @@ jobs:
         # 2026-10-17: 但"目录存在"不等于"这份 toolchain 匹配本次配置" —— restore-keys 是前缀匹配,
         # .config 一改仍会把旧 staging_dir 整树恢复回来。故加构建指纹(与缓存 key 同一输入):
         #   staging_dir/.hermes-build-fingerprint 与本次指纹不一致 → 清 toolchain, 安全降级走冷编。
-        # 注意: 不把 lede commit 放进 key/指纹 —— 上游每次 bump 都全冷编(5h21m 已逼近 6h 上限)。
-        # 2026-10-30: CACHE_FP 仍用于缓存 key；新增 TOOLCHAIN_FP(只含 target/arch/compiler/libc)判断
+        # 2026-11-01: 主缓存 key 已包含 source SHA; 这里只校验 toolchain 指纹。
+        # 2026-10-30: CACHE_FP 仅用于旧缓存兼容/诊断; TOOLCHAIN_FP(只含 target/arch/compiler/libc)判断
         # toolchain 是否可复用。运行期文件(firewall/uci-defaults)变化不再导致 toolchain 冷编。
         # 2026-10-20 修(第二轮): 指纹之前一直读 "${PATH1}/.config", 但「加载设置」里已执行
         #   mv "$PATH1/$CONFIG_FILE" .config
@@ -601,11 +681,15 @@ jobs:
             # dl/ 仍保留，不需要重新下载源码包。
             echo "::warning::toolchain 指纹不一致(${OLD_TC:0:16} ≠ ${TOOLCHAIN_FP:0:16}) → 清理 toolchain 缓存并冷编"
             rm -rf "$SD"/toolchain-* "$BD"/toolchain-*
+            # 2026-11-01: 包缓存是精确 key, 但 toolchain 不可信时不能让 target staging 继续复用。
+            rm -rf "$SD"/target-* "$BD"/target-*
             rm -f "$SD/.hermes-toolchain-fingerprint" "$SD/.hermes-build-fingerprint"
             echo "hit=false" >> $GITHUB_OUTPUT
           fi
         else
           echo "hit=false" >> $GITHUB_OUTPUT
+          # 2026-11-01: 没有可信 toolchain 时同样不要复用可能来自旧工具链的 target staging。
+          rm -rf "$SD"/target-* "$BD"/target-*
           echo "== 未发现 toolchain → 冷编保险路径 =="
         fi
     - name: 修复缓存覆盖
@@ -878,6 +962,7 @@ jobs:
       with:
         name: ${{ env.OpenWrt_name }}-${{ env.CODE }}-${{ env.TARGET_PROFILE }}-firmware-${{ env.Compile_Date }}
         path: ${{ env.FIRMWARE }}
+        if-no-files-found: error
 
     - name: 发布信息
       if: env.status == 'success' && env.UPLOAD_RELEASE == 'true'
@@ -937,7 +1022,36 @@ jobs:
       if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
       run: |
        cd openwrt
-       source "${PATH1}/upgrade.sh" && Diy_Part3
+       source "${PATH1}/upgrade.sh"
+       Diy_Part3
+       # Diy_Part3 对缺失镜像只打提示, 最终 cd ${Home} 仍返回 0; 这里在生成清单前
+       # 硬断言镜像确实存在, 避免后面拿 BUILD_SOURCE/SOURCE_LOCK 凑够 2 个资产就发布。
+       [ -d "${Home}/bin/Firmware" ] || { echo "!! Diy_Part3 未生成 ${Home}/bin/Firmware"; exit 1; }
+       case "${TARGET_PROFILE}" in
+         x86-64)
+           IMG_COUNT="$(find "${Home}/bin/Firmware" -maxdepth 1 -type f -name '*.img.gz' | wc -l)"
+           [ "${IMG_COUNT}" -eq 2 ] || {
+             echo "!! x86-64 OTA 需要 Legacy + UEFI 两个 .img.gz, 实际 ${IMG_COUNT} 个"
+             find "${Home}/bin/Firmware" -maxdepth 1 -type f -printf '%f\n' | sort
+             exit 1
+           }
+           ;;
+         x86-32)
+           IMG_COUNT="$(find "${Home}/bin/Firmware" -maxdepth 1 -type f -name '*.img.gz' | wc -l)"
+           [ "${IMG_COUNT}" -ge 1 ] || {
+             echo "!! x86-32 OTA 固件目录没有 .img.gz 镜像"
+             find "${Home}/bin/Firmware" -maxdepth 1 -type f -printf '%f\n' | sort
+             exit 1
+           }
+           ;;
+         *)
+           find "${Home}/bin/Firmware" -maxdepth 1 -type f \( -name '*.bin' -o -name '*.trx' \) -print -quit | grep -q . || {
+             echo "!! OTA 固件目录没有 .bin/.trx 镜像"
+             find "${Home}/bin/Firmware" -maxdepth 1 -type f -printf '%f\n' | sort
+             exit 1
+           }
+           ;;
+       esac
        # 2026-10-09: 为 AutoUpdate 通道的固件生成完整 SHA256 清单(<固件>.sha256)
        # 设备端 AutoUpdate.sh 优先用它做 64 位全量校验; 旧发布没有该文件时回落到文件名片段校验
        cd "${Home}/bin/Firmware"
@@ -973,9 +1087,19 @@ jobs:
 
     - name: 电报通知
       if: env.status == 'success' && env.SERVERCHAN_SCKEY == 'true'
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        curl --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件顺利编译完成了！💐" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-          || echo "::warning::电报通知发送失败(不影响固件与发布)"
+        if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
+          echo "::warning::Telegram secret 未配置, 跳过通知"
+          exit 0
+        fi
+        curl --silent --show-error --fail --config - \
+          --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+          --data-urlencode "text=我亲爱的✨主人✨：您使用【${{matrix.target}}】文件夹编译的[${{ env.CODE }}-${{ env.TARGET_PROFILE }}]固件顺利编译完成了！💐" <<EOF || echo "::warning::电报通知发送失败(不影响固件与发布)"
+        url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+        EOF
 
     - name: 失败取证(归档日志与配置)
       # 2026-10-20: 原为 if: failure() —— GitHub 的 failure() 在「作业被取消」时也不执行。

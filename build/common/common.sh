@@ -76,7 +76,9 @@ if [[ ${REGULAR_UPDATE} == "true" ]]; then
 	# 不会静默跳过补丁。若需要临时冻结, 再在这里加 git checkout <SHA>。
 	APP_DIR="feeds/luci/applications/luci-app-autoupdate"
 	git clone https://github.com/281677160/luci-app-autoupdate "${APP_DIR}" || { echo "!! luci-app-autoupdate 拉取失败, 构建中止"; exit 1; }
-	cp -Rf "${PATH1}"/{AutoUpdate.sh,replace.sh} package/base-files/files/bin
+	# 2026-11-01: replace.sh 是已停用的 EOL 通道救援脚本(-g 已直接退出),
+	# 不再把死代码装进 /bin; 只安装实际使用的 AutoUpdate.sh。
+	cp -Rf "${PATH1}/AutoUpdate.sh" package/base-files/files/bin
 	# 2026-10-27: cp 保持仓库里的 0644, 断言 -x 会让本地构建误判"未就位"(CI 里靠
 	# workflow 的 chmod -R +x 蒙过去)。这里自己补权限再断言。
 	chmod 0755 package/base-files/files/bin/AutoUpdate.sh

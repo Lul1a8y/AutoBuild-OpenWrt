@@ -126,7 +126,9 @@ case "${Download_Path#/tmp/}" in
 esac
 export Download_Tags="${Download_Path}/Github_Tags"
 export TMP_Available="$(df -m | grep "/tmp" | awk '{print $4}' | awk 'NR==1' | awk -F. '{print $1}')"
-export AutoUpdate_Log_Path="/tmp"
+# 2026-11-01: /tmp 是 1777, 固定日志名可被本地低权用户预创建为符号链接。
+# 运行状态统一放进 root 私有 0700 目录, 日志/锁不再直接落在 /tmp。
+export AutoUpdate_Log_Path="/tmp/autoupgrade"
 # 2026-11-01(O10): 帮助必须在拿锁、清理下载目录之前返回; 只读本地信息。
 case ${DEFAULT_Device} in
 x86-64)
@@ -157,11 +159,19 @@ esac
 # 2026-10-31(O15): 手动通道原来没有锁。与包内 /usr/bin/AutoUpdate 共用同一个锁文件,
 # 避免 cron 升级与手动执行同时跑 sysupgrade -b/-f。
 umask 077
+# 2026-11-01: 锁和日志放在 root 私有 0700 目录, 不跟随 /tmp 下的预创建符号链接。
+AUTOUPGRADE_STATE_DIR="/tmp/autoupgrade"
+mkdir -m 700 "${AUTOUPGRADE_STATE_DIR}" 2>/dev/null || true
+[ -d "${AUTOUPGRADE_STATE_DIR}" ] && [ ! -L "${AUTOUPGRADE_STATE_DIR}" ] && [ -O "${AUTOUPGRADE_STATE_DIR}" ] || {
+	echo "!! ${AUTOUPGRADE_STATE_DIR} 不是 root 所有的私有目录, 拒绝使用" >&2
+	exit 1
+}
+chmod 700 "${AUTOUPGRADE_STATE_DIR}"
 if command -v flock >/dev/null 2>&1; then
-	exec 9>>"/tmp/autoupgrade.lock" || { echo "!! 无法打开升级锁" >&2; exit 1; }
+	exec 9>"${AUTOUPGRADE_STATE_DIR}/lock" || { echo "!! 无法打开升级锁" >&2; exit 1; }
 	flock -n 9 || { echo "!! 已有升级任务在运行, 退出" >&2; exit 1; }
 else
-	LOCK_DIR="/tmp/autoupgrade.lock.d"
+	LOCK_DIR="${AUTOUPGRADE_STATE_DIR}/lock.d"
 	mkdir "${LOCK_DIR}" 2>/dev/null || { echo "!! 已有升级任务在运行, 退出" >&2; exit 1; }
 	trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
 fi
@@ -169,6 +179,10 @@ fi
 [ -L "${Download_Path}" ] && { echo "!! ${Download_Path} 是符号链接, 拒绝使用" >&2; exit 1; }
 if [ -e "${Download_Path}" ] && [ ! -d "${Download_Path}" ]; then
 	echo "!! ${Download_Path} 不是目录, 拒绝使用" >&2
+	exit 1
+fi
+if [ "${Download_Path}" = "${AUTOUPGRADE_STATE_DIR}" ]; then
+	echo "!! Download_Path 不能与升级锁/日志目录重叠: ${Download_Path}" >&2
 	exit 1
 fi
 rm -rf "${Download_Path}"
@@ -211,9 +225,10 @@ TIME() {
 }
 
 LOGGER() {
-	[[ ! -d ${AutoUpdate_Log_Path} ]] && mkdir -p ${AutoUpdate_Log_Path}
-	[[ ! -f ${AutoUpdate_Log_Path}/AutoUpdate.log ]] && touch ${AutoUpdate_Log_Path}/AutoUpdate.log
-	echo "[$(date "+%Y-%m-%d-%H:%M:%S")] [$(GET_PID AutoUpdate.sh)] $*" >> ${AutoUpdate_Log_Path}/AutoUpdate.log
+	# 2026-11-01: 日志目录已在上面的锁初始化中校验为 root 私有 0700 目录;
+	# 不再在 /tmp 下 touch 固定文件名, 避免符号链接跟随。
+	[ -d "${AutoUpdate_Log_Path}" ] || return 0
+	echo "[$(date "+%Y-%m-%d-%H:%M:%S")] [$(GET_PID AutoUpdate.sh)] $*" >> "${AutoUpdate_Log_Path}/AutoUpdate.log"
 }
 cd /etc
 clear && echo "Openwrt-AutoUpdate Script ${Version}"
@@ -333,15 +348,20 @@ else
 	;;
 	esac
 fi
-# 2026-11-01(O10): -h/-c/-g/非法参数已在 case 内退出; 只有实际升级流程才写
-# /etc/openwrt_ver, 帮助不会因为新机器上文件缺失而污染 overlay。
+# 2026-11-01(O10): -h/-c/-g/非法参数已在 case 内退出; -t/-w 只查询/演练,
+# 也不写 /etc/openwrt_ver。只有实际升级流程才落盘。
 # 2026-10-29: 只有内容变化时才写, 避免每次手动/定时运行都写 overlay。
-OPENWRT_VER_CONTENT="$(printf 'CURRENT_Version=%s\n\nCURRENT_Model=%s%s\n\nNEI_Luci=%s - %s\n' \
-	"${CURRENT_Version}" "${EFI_Mode}" "${Firmware_SFX}" "${Kernel}" "${Luci_Edition}")"
-if [ ! -f /etc/openwrt_ver ] || [ "$(cat /etc/openwrt_ver 2>/dev/null)" != "${OPENWRT_VER_CONTENT}" ]; then
-	printf '%s\n' "${OPENWRT_VER_CONTENT}" > /etc/openwrt_ver
-fi
-unset OPENWRT_VER_CONTENT
+case "${Input_Other}" in
+	-t|-w) ;;
+	*)
+		OPENWRT_VER_CONTENT="$(printf 'CURRENT_Version=%s\n\nCURRENT_Model=%s%s\n\nNEI_Luci=%s - %s\n' \
+			"${CURRENT_Version}" "${EFI_Mode}" "${Firmware_SFX}" "${Kernel}" "${Luci_Edition}")"
+		if [ ! -f /etc/openwrt_ver ] || [ "$(cat /etc/openwrt_ver 2>/dev/null)" != "${OPENWRT_VER_CONTENT}" ]; then
+			printf '%s\n' "${OPENWRT_VER_CONTENT}" > /etc/openwrt_ver
+		fi
+		unset OPENWRT_VER_CONTENT
+		;;
+esac
 [[ -z ${CURRENT_Version} ]] && TIME r "本地固件版本获取失败,请检查/bin/openwrt_info文件的值!" && exit 1
 [[ -z ${Github} ]] && TIME r "Github地址获取失败,请检查/bin/openwrt_info文件的值!" && exit 1
 TIME g "正在获取云端固件版本信息..."
@@ -368,8 +388,12 @@ export CLOUD_Version="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFA
 	exit 1
 }
 [[ "${Input_Other}" == "-w" ]] && {
-	echo -e "\nCLOUD_Version=${CLOUD_sion}" > /tmp/Version_Tags
-	echo -e "\nCURRENT_Version=${CURRENT_Version}" >> /tmp/Version_Tags
+	# 2026-11-01: 不再直接截断 /tmp/Version_Tags(可被预创建为符号链接);
+	# 先在私有 Download_Path 生成, 再用 mv 原子替换(替换的是链接本身, 不跟随目标)。
+	VERSION_TAGS_TMP="$(mktemp "${Download_Path}/Version_Tags.XXXXXX")" || exit 1
+	printf '\nCLOUD_Version=%s\n' "${CLOUD_sion}" > "${VERSION_TAGS_TMP}"
+	printf '\nCURRENT_Version=%s\n' "${CURRENT_Version}" >> "${VERSION_TAGS_TMP}"
+	mv -f "${VERSION_TAGS_TMP}" /tmp/Version_Tags || exit 1
 	exit 0
 }
 export Firmware_Name="$(echo "${CLOUD_Firmware}" | egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"

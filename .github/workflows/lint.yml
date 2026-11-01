@@ -15,9 +15,24 @@ jobs:
     steps:
       - name: 准备结束
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: 安装 shellcheck
         run: |
           sudo apt-get update
           sudo apt-get install -y shellcheck
+      - name: 安装 actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
       - name: 运行 lint
+        env:
+          # PR 用 base.sha; push 用 before; 手动触发为空时 lint.sh 回退到 HEAD^。
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: ./scripts/lint.sh

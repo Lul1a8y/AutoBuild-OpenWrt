@@ -225,15 +225,20 @@ if ! grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN"; then
     print
     print ""
     print "# 2026-10-30: 升级互斥; 用 flock 原子加锁, 避免 mkdir/rm 的毫秒级竞态。"
-    print "AUTOUPGRADE_LOCK=\"/tmp/autoupgrade.lock\""
+    print "# 2026-11-01: 锁放进 root 私有 0700 目录, 不再直接落在 /tmp(可被预创建为符号链接)。"
+    print "AUTOUPGRADE_STATE_DIR=\"/tmp/autoupgrade\""
+    print "mkdir -m 700 \"$AUTOUPGRADE_STATE_DIR\" 2>/dev/null || true"
+    print "[ -d \"$AUTOUPGRADE_STATE_DIR\" ] && [ ! -L \"$AUTOUPGRADE_STATE_DIR\" ] && [ -O \"$AUTOUPGRADE_STATE_DIR\" ] || { echo \"升级状态目录所有者异常\" >&2; exit 1; }"
+    print "chmod 700 \"$AUTOUPGRADE_STATE_DIR\""
+    print "AUTOUPGRADE_LOCK=\"$AUTOUPGRADE_STATE_DIR/lock\""
     print "if command -v flock >/dev/null 2>&1; then"
     print "    exec 9>\"$AUTOUPGRADE_LOCK\""
     print "    flock -n 9 || { echo \"另一个 AutoUpdate 正在运行\" >&2; exit 1; }"
     print "else"
-    print "    AUTOUPGRADE_LOCK_DIR=\"/tmp/autoupgrade.lock.d\""
+    print "    AUTOUPGRADE_LOCK_DIR=\"$AUTOUPGRADE_STATE_DIR/lock.d\""
     print "    mkdir \"$AUTOUPGRADE_LOCK_DIR\" 2>/dev/null || { echo \"另一个 AutoUpdate 正在运行\" >&2; exit 1; }"
-    print "    trap \"rmdir /tmp/autoupgrade.lock.d 2>/dev/null\" EXIT"
-    print "    trap \"rmdir /tmp/autoupgrade.lock.d 2>/dev/null; exit 130\" INT TERM"
+    print "    trap \"rmdir $AUTOUPGRADE_LOCK_DIR 2>/dev/null\" EXIT"
+    print "    trap \"rmdir $AUTOUPGRADE_LOCK_DIR 2>/dev/null; exit 130\" INT TERM"
     print "fi"
     done=1
     next
@@ -241,6 +246,12 @@ if ! grep -q 'AUTOUPGRADE_LOCK' "$AU_BIN"; then
   { print }' "$AU_BIN" > "$AU_BIN.new" && mv "$AU_BIN.new" "$AU_BIN"
 fi
 grep -q 'flock -n 9' "$AU_BIN" || { echo "!! 包内 AutoUpdate 的 flock 互斥未插入"; exit 1; }
+grep -q 'AUTOUPGRADE_STATE_DIR="/tmp/autoupgrade"' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 未使用私有状态目录"; exit 1
+}
+grep -q 'AUTOUPGRADE_LOCK="$AUTOUPGRADE_STATE_DIR/lock"' "$AU_BIN" || {
+  echo "!! 包内 AutoUpdate 锁路径不安全"; exit 1
+}
 
 if grep -q 'autoupgrade.pid' "$AU_BIN"; then
   perl -0pi -e 's{    # 清理下载进程\n    if \[ -f "/tmp/autoupgrade\.pid" \]; then\n.*?\n    fi\n}{    # 2026-10-30: 不再全局结束 wget/uclient-fetch/curl; 互斥锁已防止并发。\n}s' "$AU_BIN"
