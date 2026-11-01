@@ -156,6 +156,11 @@ case ${Input_Option} in
 		Shell_Helper
 	;;
 esac
+# 2026-11-01: 非法参数也必须在拿锁/清理下载目录前退出, 否则 -x 会先删下载目录再打印帮助。
+case "${Input_Option}" in
+	""|-t|-n|-N|-s|-u|-f|-c|-w|-g|-G|-h|-H|-l|-L) ;;
+	*) Shell_Helper ;;
+esac
 # 2026-10-31(O15): 手动通道原来没有锁。与包内 /usr/bin/AutoUpdate 共用同一个锁文件,
 # 避免 cron 升级与手动执行同时跑 sysupgrade -b/-f。
 umask 077
