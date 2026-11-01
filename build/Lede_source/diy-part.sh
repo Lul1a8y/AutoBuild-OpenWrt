@@ -66,10 +66,18 @@ printf 'sbwml/luci-app-mosdns (geo2txt): %s\n' "$MOSDNS_SHA" >> "$SOURCE_EXTRA"
 rm -rf /tmp/mosdns-upstream
 
 # ===== 默认IP 192.168.50.2 =====
-sed -i "s/192.168.1.1/192.168.50.2/g" package/base-files/files/bin/config_generate
+CONFIG_GENERATE="package/base-files/files/bin/config_generate"
+[ -f "$CONFIG_GENERATE" ] || { echo "!! 找不到 $CONFIG_GENERATE"; exit 1; }
+sed -i "s/192.168.1.1/192.168.50.2/g" "$CONFIG_GENERATE"
+grep -q '192\.168\.50\.2' "$CONFIG_GENERATE" || { echo "!! 默认 IP 未改写为 192.168.50.2"; exit 1; }
 
 # ===== 主机名 Openwrt =====
-sed -i "s/hostname='LEDE'/hostname='Openwrt'/g" package/base-files/files/bin/config_generate
+sed -i "s/hostname='LEDE'/hostname='Openwrt'/g" "$CONFIG_GENERATE"
+grep -q "hostname='Openwrt'" "$CONFIG_GENERATE" || { echo "!! 默认主机名未改写为 Openwrt"; exit 1; }
+if grep -q "hostname='LEDE'" "$CONFIG_GENERATE"; then
+	echo "!! 默认主机名仍残留 hostname='LEDE'"
+	exit 1
+fi
 
 # ===== 删除 feeds 冲突包（用权威源/官方源替换）=====
 rm -rf feeds/luci/applications/luci-app-openclash
@@ -111,8 +119,12 @@ git clone --depth 1 -b master https://github.com/fw876/helloworld.git package/he
 for dir in package/kenzok8/*/; do
     base=$(basename "$dir")
     if [ -d "$dir/$base" ] && [ -f "$dir/$base/Makefile" ]; then
-        mv "$dir/$base"/* "$dir/" 2>/dev/null
-        rm -rf "$dir/$base"
+        if ! mv "$dir/$base"/* "$dir/"; then
+            echo "!! 嵌套包迁移失败: $dir/$base"
+            exit 1
+        fi
+        [ -f "$dir/Makefile" ] || { echo "!! 嵌套包迁移后缺少 $dir/Makefile"; exit 1; }
+        rm -rf "${dir:?}/${base:?}"
     fi
 done
 
@@ -152,7 +164,8 @@ rm -f package/kenzok8/luci-app-adguardhome/root/etc/AdGuardHome.yaml
 AGH_LUCI_MK="$(find package/kenzok8 -path '*/luci-app-adguardhome/Makefile' -print -quit 2>/dev/null)"
 if [ -n "$AGH_LUCI_MK" ] && [ -f "$AGH_LUCI_MK" ]; then
 	sed -i '/define Package\/luci-app-adguardhome\/postinst/,/^endef$/d' "$AGH_LUCI_MK"
-	sed -i 's/default y/default n/' "$AGH_LUCI_MK"
+	# 只改 INCLUDE_binary 这个 config 块, 避免上游新增其它 default y 时被一起关掉。
+	sed -i '/^config PACKAGE_\$(PKG_NAME)_INCLUDE_binary/,/^config /{s/^\([[:space:]]*default[[:space:]]*\)y[[:space:]]*$/\1n/}' "$AGH_LUCI_MK"
 	# 2026-10-28: 原来按 /INCLUDE_binary:adguardhome/d 删整行, 而上游这一行是
 	#   LUCI_DEPENDS:=+ca-certs +curl +wget-ssl +PACKAGE_$(PKG_NAME)_INCLUDE_binary:adguardhome
 	# 删整行会把 ca-certs/curl/wget-ssl 一起丢掉 —— 当前只是被 target 默认包(curl)和
@@ -167,7 +180,12 @@ if [ -n "$AGH_LUCI_MK" ] && [ -f "$AGH_LUCI_MK" ]; then
 		echo "!! AdGuardHome 的 INCLUDE_binary 条件依赖没摘掉(缺省会连核心一起编)"
 		exit 1
 	fi
-	if ! grep -A4 'config PACKAGE_$(PKG_NAME)_INCLUDE_binary' "$AGH_LUCI_MK" | grep -q 'default n'; then
+	if ! awk '
+		index($0, "config PACKAGE_$(PKG_NAME)_INCLUDE_binary") == 1 { inblk = 1; next }
+		inblk && $0 ~ /^config / { exit }
+		inblk && $0 ~ /^[[:space:]]*default[[:space:]]+n[[:space:]]*$/ { found = 1 }
+		END { exit(found ? 0 : 1) }
+	' "$AGH_LUCI_MK"; then
 		echo "!! AdGuardHome 的 INCLUDE_binary 默认值不是 n(核心会被无条件打包)"
 		exit 1
 	fi

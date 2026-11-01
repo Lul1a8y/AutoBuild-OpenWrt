@@ -39,10 +39,12 @@ jobs:
     # 而是在降级重编前检查剩余时间(见「编译固件」), 保证失败现场能在 job 被硬杀前归档。
     timeout-minutes: 355
     outputs:
+      # 2026-11-01: publishmeta 在任何 clone/feeds/make 之前固化, 是唯一可信发布门禁。
+      # 下游 sign/publish 只读这些 outputs, 不读构建后可能被污染的 env.*。
       regular_update: ${{ steps.publishmeta.outputs.regular_update }}
       has_repo_token: ${{ steps.publishmeta.outputs.has_repo_token }}
-      firmware_date: ${{ steps.organizer.outputs.firmware_date }}
-      ota_enabled: ${{ steps.organizer.outputs.ota_enabled }}
+      firmware_date: ${{ steps.publishmeta.outputs.compile_date }}
+      ota_enabled: ${{ steps.publishmeta.outputs.regular_update }}
 
     name: 编译 "${{matrix.target}}"
     strategy:
@@ -133,11 +135,42 @@ jobs:
         # 2026-10-29: 构建 job 只拿"是否配置"的布尔值, 不拿签名私钥本身;
         # 私钥只在独立 sign job 中使用。
         echo "HAS_SIGN_KEY=${{ secrets.FIRMWARE_SIGN_KEY_B64 != '' }}" >> $GITHUB_ENV
-    - name: 发布元数据
+    - name: 固化可信发布元数据
       id: publishmeta
+      # 2026-11-01: 在进入任何 clone/feeds/make 之前固化发布开关与构建时间。
+      # 后面的构建步骤（包括第三方 Makefile）即使写 GITHUB_ENV，也无法改动这里的 step outputs；
+      # 上传/发布/签名门禁只读这里，不读构建后可能被污染的 env.*。
       run: |
-        echo "regular_update=${REGULAR_UPDATE}" >> "$GITHUB_OUTPUT"
-        echo "has_repo_token=${HAS_REPO_TOKEN}" >> "$GITHUB_OUTPUT"
+        set -euo pipefail
+        COMPILE_DATE="$(date +%Y%m%d%H%M)"
+        DATE_SUFFIX="$(date +%m-%d)"
+        [ -n "$COMPILE_DATE" ] || { echo "!! Compile_Date 生成失败"; exit 1; }
+        for name in UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE SERVERCHAN_SCKEY REGULAR_UPDATE HAS_REPO_TOKEN HAS_SIGN_KEY; do
+          eval "value=\${$name:-}"
+          case "$value" in
+            true|false|"") ;;
+            *) echo "!! 可信元数据 ${name}=『${value}』不是 true/false"; exit 1 ;;
+          esac
+        done
+        {
+          printf 'regular_update=%s\n' "${REGULAR_UPDATE:-}"
+          printf 'upload_bin_dir=%s\n' "${UPLOAD_BIN_DIR:-}"
+          printf 'upload_config=%s\n' "${UPLOAD_CONFIG:-}"
+          printf 'upload_firmware=%s\n' "${UPLOAD_FIRMWARE:-}"
+          printf 'upload_release=%s\n' "${UPLOAD_RELEASE:-}"
+          printf 'serverchan_sckey=%s\n' "${SERVERCHAN_SCKEY:-}"
+          printf 'has_repo_token=%s\n' "${HAS_REPO_TOKEN:-}"
+          printf 'has_sign_key=%s\n' "${HAS_SIGN_KEY:-}"
+          printf 'compile_date=%s\n' "$COMPILE_DATE"
+          printf 'date=%s\n' "$COMPILE_DATE"
+          printf 'date1=%s\n' "$DATE_SUFFIX"
+        } >> "$GITHUB_OUTPUT"
+        {
+          printf 'Compile_Date=%s\n' "$COMPILE_DATE"
+          printf 'date=%s\n' "$COMPILE_DATE"
+          printf 'date1=%s\n' "$DATE_SUFFIX"
+        } >> "$GITHUB_ENV"
+        echo "== 可信发布元数据: ${REGULAR_UPDATE:-}/${COMPILE_DATE} =="
     - name: 检查签名密钥
       run: |
         # 2026-10-28: 未配置签名密钥时, 原来要等 5 小时编译完、到「云端更新1」才失败。
@@ -269,21 +302,8 @@ jobs:
         # 仓库 secret OPENCLASH_DASH_PASS 优先; 未配置则本次随机生成(可在路由器上 uci get 读取)
         OC_PASS_SECRET: ${{ secrets.OPENCLASH_DASH_PASS }}
       run: |
-        # 2026-10-30: 必须在同一个 shell 里先赋值，再写 GITHUB_ENV；
-        # 直接 echo "date=${Compile_Date}" 时 GITHUB_ENV 还没生效，date 会写成空串。
-        COMPILE_DATE="$(date +%Y%m%d%H%M)"
-        DATE_SUFFIX="$(date +%m-%d)"
-        [ -n "${COMPILE_DATE}" ] || { echo "!! Compile_Date 生成失败"; exit 1; }
-        echo "Compile_Date=${COMPILE_DATE}" >> "$GITHUB_ENV"
-        # 2026-10-30: date/date1 也改为编译开始时生成, 与 Compile_Date、固件名保持同一时间基准;
-        # 原先在编译结束后生成, normal release tag 会比固件名时间戳晚数小时。
-        # date 统一用 12 位(与固件名一致), 不再和 14 位格式并存。
-        echo "date=${COMPILE_DATE}" >> "$GITHUB_ENV"
-        echo "date1=${DATE_SUFFIX}" >> "$GITHUB_ENV"
-        # 2026-10-30: 在当前 step 里立刻回读 GITHUB_ENV, 变量作用域写错时秒级失败,
-        # 不要等 3.5 小时编译完、到发布固件才报 "No tag found"。
-        grep -q "^Compile_Date=${COMPILE_DATE}$" "$GITHUB_ENV" || { echo "!! GITHUB_ENV 的 Compile_Date 写入异常"; exit 1; }
-        grep -q "^date=${COMPILE_DATE}$" "$GITHUB_ENV" || { echo "!! GITHUB_ENV 的 date 写入异常"; exit 1; }
+        # 2026-11-01: Compile_Date/date/date1 已由「固化可信发布元数据」在 clone/feeds 之前生成,
+        # 这里不再重新生成, 避免构建脚本通过 GITHUB_ENV 改写发布时间。
         OC_CFG="${GITHUB_WORKSPACE}/build/${{matrix.target}}/files/etc/config/openclash"
         if [ -f "$OC_CFG" ]; then
           if [ -n "$OC_PASS_SECRET" ]; then
@@ -306,7 +326,7 @@ jobs:
         find ./ -maxdepth 1 -type d ! -path './openwrt' ! -path './.git' ! -path './' -print0 \
           | xargs -0 -r cp -Rf -t openwrt
         [ -d openwrt/build ] || { echo "!! 源码目录拷贝失败: openwrt/build 不存在"; exit 1; }
-        mv -f "${Home}"/build/common/*.sh "${PATH1}"
+        mv -f "${Home}"/build/common/*.sh "${PATH1}" || { echo "!! 无法复制 build/common 脚本到 ${PATH1}"; exit 1; }
         # 2026-10-09: feeds 之后的修补统一在 post-feeds.sh(单一定义, 幂等); 未就位即中止, 不留静默缺口
         [ -f "${PATH1}/post-feeds.sh" ] || { echo "!! post-feeds.sh 未随 build/common/*.sh 就位"; exit 1; }
         source "${PATH1}/common.sh"
@@ -342,7 +362,7 @@ jobs:
         # 没人看得见, 真正的结果由 -f 决定。buildroot 的 feeds install 只是建 package/feeds
         # 下的软链, 不存在"必须先无 -f 跑一遍才能 -f"的依赖。
         ./scripts/feeds install -a -f
-        mv "$PATH1/$CONFIG_FILE" .config
+        mv "$PATH1/$CONFIG_FILE" .config || { echo "!! 无法把 ${CONFIG_FILE} 放到 openwrt/.config"; exit 1; }
         # 2026-10-09: .config 就位后再跑一次 post-feeds.sh —— 补 .config 里 vsftpd/clashoo 反选,
         # 并再防一次 feeds install -a -f 把 feed 源码还原(函数内所有操作幂等)
         bash "${PATH1}/post-feeds.sh"
@@ -410,7 +430,7 @@ jobs:
       run: |
         cd openwrt
         source "${PATH1}/common.sh"
-        Diy_chajian > /dev/null
+        # 2026-11-01: Diy_chajian/CHONGTU 没有调用方也没有输入文件, 已删除死代码。
         # 2026-10-17: 不再吞掉 defconfig 输出 —— 它失败时 .config 会保持旧状态, 后面却照常编译。
         make defconfig || { echo "!! make defconfig 失败"; exit 1; }
         # 2026-10-29: 必须同时产出 BIOS(Legacy combined) 和 EFI 镜像。
@@ -527,6 +547,48 @@ jobs:
           # 2026-10-17: 删掉 chmod -R 755 .(整树递归改权限, 上万文件 + 抹掉可执行位差异);
           # Diy_xinxi 只 echo 编译信息、不写任何文件(已核 common.sh 全文), 不需要兜权限。
         fi
+
+    - name: 收集构建元数据并计算仓库指纹
+      id: trustedmeta
+      # 2026-11-01: 这里只收集编译目标/路径/仓库指纹, 不承担发布门禁; 发布门禁已由
+      # 更早的 publishmeta 固化。编译阶段执行的上游 Makefile/第三方脚本不能改写 step outputs。
+      run: |
+        set -euo pipefail
+        emit() {
+          local name="$1" value="$2"
+          case "$value" in
+            *$'\n'*|*$'\r'*) echo "::error::可信元数据 ${name} 含换行"; exit 1 ;;
+          esac
+          printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+        }
+        emit regular_update "${REGULAR_UPDATE:-}"
+        emit upload_bin_dir "${UPLOAD_BIN_DIR:-}"
+        emit upload_config "${UPLOAD_CONFIG:-}"
+        emit upload_firmware "${UPLOAD_FIRMWARE:-}"
+        emit upload_release "${UPLOAD_RELEASE:-}"
+        emit serverchan_sckey "${SERVERCHAN_SCKEY:-}"
+        emit has_repo_token "${HAS_REPO_TOKEN:-}"
+        emit has_sign_key "${HAS_SIGN_KEY:-}"
+        emit code "${CODE:-}"
+        emit openwrt_name "${OpenWrt_name:-}"
+        emit target_profile "${TARGET_PROFILE:-}"
+        emit target_board "${TARGET_BOARD:-}"
+        emit target_subtarget "${TARGET_SUBTARGET:-}"
+        emit compile_date "${Compile_Date:-}"
+        emit date "${date:-}"
+        emit date1 "${date1:-}"
+        emit firmware_ver "${FIRMWARE_VER:-}"
+        emit path1 "${PATH1:-}"
+        emit home "${Home:-}"
+        for name in regular_update has_repo_token code openwrt_name target_profile compile_date date date1 firmware_ver path1 home; do
+          eval "value=\${$name:-}"
+          [ -n "$value" ] || { echo "::error::可信元数据 ${name} 为空"; exit 1; }
+        done
+        repo_hash="$(find build/common build/Lede_source .github/workflows scripts BUILD_SOURCE.txt SOURCE_LOCK.txt -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+        [ -n "$repo_hash" ] || { echo "::error::无法计算仓库指纹"; exit 1; }
+        emit repo_hash "$repo_hash"
+        echo "== 构建元数据已固化: ${TARGET_PROFILE}/${Compile_Date}; repo=${repo_hash} =="
+
     - name: 电报通知
       if: env.SERVERCHAN_SCKEY == 'true'
       env:
@@ -735,12 +797,16 @@ jobs:
       id: package
       run: |
         cd openwrt
+        unset GITHUB_ENV GITHUB_OUTPUT GITHUB_PATH GITHUB_STEP_SUMMARY
         make download -j8
         find dl -size -1024c -exec rm -f {} \;
     - name: 编译固件
       id: compile
       run: |
         cd openwrt
+        # 2026-11-01: make 会执行上游 package 脚本。不要让它通过文件命令接口
+        # 向后续 step 注入 UPLOAD_RELEASE/PATH 等变量; 可信元数据由 trustedmeta 单独固化。
+        unset GITHUB_ENV GITHUB_OUTPUT GITHUB_PATH GITHUB_STEP_SUMMARY
         echo -e "$(nproc) thread compile"
         # ===== 9/5 binutils 修复背景(勿删) =====
         # run1-4 binutils 冷编均链接期失败(undefined __sprintf_chk/fopen64);
@@ -815,10 +881,98 @@ jobs:
         fi
         echo "${CACHE_FP}" > staging_dir/.hermes-build-fingerprint
         echo "${TOOLCHAIN_FP}" > staging_dir/.hermes-toolchain-fingerprint
-        echo "status=success" >> $GITHUB_ENV
+
+    - name: 校验构建元数据并恢复可信环境
+      if: steps.compile.outcome == 'success'
+      env:
+        T_REPO_HASH: ${{ steps.trustedmeta.outputs.repo_hash }}
+        T_COMPILE_DATE: ${{ steps.publishmeta.outputs.compile_date }}
+        T_DATE: ${{ steps.publishmeta.outputs.date }}
+        T_DATE1: ${{ steps.publishmeta.outputs.date1 }}
+        T_CODE: ${{ steps.trustedmeta.outputs.code }}
+        T_OPENWRT_NAME: ${{ steps.trustedmeta.outputs.openwrt_name }}
+        T_TARGET_PROFILE: ${{ steps.trustedmeta.outputs.target_profile }}
+        T_TARGET_BOARD: ${{ steps.trustedmeta.outputs.target_board }}
+        T_TARGET_SUBTARGET: ${{ steps.trustedmeta.outputs.target_subtarget }}
+        T_REGULAR_UPDATE: ${{ steps.publishmeta.outputs.regular_update }}
+        T_UPLOAD_BIN_DIR: ${{ steps.publishmeta.outputs.upload_bin_dir }}
+        T_UPLOAD_CONFIG: ${{ steps.publishmeta.outputs.upload_config }}
+        T_UPLOAD_FIRMWARE: ${{ steps.publishmeta.outputs.upload_firmware }}
+        T_UPLOAD_RELEASE: ${{ steps.publishmeta.outputs.upload_release }}
+        T_SERVERCHAN_SCKEY: ${{ steps.publishmeta.outputs.serverchan_sckey }}
+        T_HAS_REPO_TOKEN: ${{ steps.publishmeta.outputs.has_repo_token }}
+        T_HAS_SIGN_KEY: ${{ steps.publishmeta.outputs.has_sign_key }}
+        T_FIRMWARE_VER: ${{ steps.trustedmeta.outputs.firmware_ver }}
+        T_PATH1: ${{ steps.trustedmeta.outputs.path1 }}
+        T_HOME: ${{ steps.trustedmeta.outputs.home }}
+        T_WORKSPACE: ${{ github.workspace }}
+        # 这些变量若被构建脚本写入 GITHUB_ENV, 会在本 step 启动时影响 bash/动态链接器;
+        # 在 step 级强制覆盖, 不能等脚本运行后再从 GITHUB_ENV 删除。
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        HOME: /home/runner
+        BASH_ENV: ""
+        ENV: ""
+        CDPATH: ""
+        GLOBIGNORE: ""
+        LD_PRELOAD: ""
+        LD_LIBRARY_PATH: ""
+        LD_AUDIT: ""
+        NODE_OPTIONS: ""
+        PYTHONPATH: ""
+        PERL5LIB: ""
+        RUBYOPT: ""
+      run: |
+        set -euo pipefail
+        current_hash="$(find build/common build/Lede_source .github/workflows scripts BUILD_SOURCE.txt SOURCE_LOCK.txt -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+        [ "$current_hash" = "${T_REPO_HASH}" ] || {
+          echo "::error::构建阶段修改了仓库构建文件 (可信=${T_REPO_HASH}, 当前=${current_hash})"
+          exit 1
+        }
+        ENVF="${GITHUB_ENV:?GITHUB_ENV 不可用}"
+        for key in \
+          Compile_Date date date1 CODE OpenWrt_name TARGET_PROFILE TARGET_BOARD TARGET_SUBTARGET \
+          REGULAR_UPDATE UPLOAD_BIN_DIR UPLOAD_CONFIG UPLOAD_FIRMWARE UPLOAD_RELEASE \
+          SERVERCHAN_SCKEY BY_INFORMATION HAS_REPO_TOKEN HAS_SIGN_KEY FIRMWARE_VER PATH1 Home \
+          FIRMWARE status BOT PATH HOME GITHUB_WORKSPACE \
+          BASH_ENV ENV CDPATH GLOBIGNORE SHELLOPTS BASHOPTS \
+          LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT \
+          NODE_OPTIONS PYTHONPATH PERL5LIB RUBYOPT \
+          GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
+          GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+          http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY; do
+          sed -i "/^${key}=/d" "$ENVF"
+        done
+        {
+          printf 'Compile_Date=%s\n' "$T_COMPILE_DATE"
+          printf 'date=%s\n' "$T_DATE"
+          printf 'date1=%s\n' "$T_DATE1"
+          printf 'CODE=%s\n' "$T_CODE"
+          printf 'OpenWrt_name=%s\n' "$T_OPENWRT_NAME"
+          printf 'TARGET_PROFILE=%s\n' "$T_TARGET_PROFILE"
+          printf 'TARGET_BOARD=%s\n' "$T_TARGET_BOARD"
+          printf 'TARGET_SUBTARGET=%s\n' "$T_TARGET_SUBTARGET"
+          printf 'REGULAR_UPDATE=%s\n' "$T_REGULAR_UPDATE"
+          printf 'UPLOAD_BIN_DIR=%s\n' "$T_UPLOAD_BIN_DIR"
+          printf 'UPLOAD_CONFIG=%s\n' "$T_UPLOAD_CONFIG"
+          printf 'UPLOAD_FIRMWARE=%s\n' "$T_UPLOAD_FIRMWARE"
+          printf 'UPLOAD_RELEASE=%s\n' "$T_UPLOAD_RELEASE"
+          printf 'SERVERCHAN_SCKEY=%s\n' "$T_SERVERCHAN_SCKEY"
+          printf 'HAS_REPO_TOKEN=%s\n' "$T_HAS_REPO_TOKEN"
+          printf 'HAS_SIGN_KEY=%s\n' "$T_HAS_SIGN_KEY"
+          printf 'FIRMWARE_VER=%s\n' "$T_FIRMWARE_VER"
+          printf 'PATH1=%s\n' "$T_PATH1"
+          printf 'Home=%s\n' "$T_HOME"
+          printf 'PATH=%s\n' "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          printf 'HOME=%s\n' "/home/runner"
+          printf 'GITHUB_WORKSPACE=%s\n' "$T_WORKSPACE"
+        } >> "$ENVF"
+        # 构建前的脚本也可能向 GITHUB_PATH 写入恶意目录; 本 step 已用固定 PATH 运行,
+        # 这里清空该文件, 避免影响后续整理/发布步骤。
+        : > "${GITHUB_PATH:?GITHUB_PATH 不可用}"
+        echo "== 构建后仓库指纹一致, 可信环境已恢复 =="
 
     - name: 构建产物自检
-      if: env.status == 'success'
+      if: steps.compile.outcome == 'success'
       run: |
         # 2026-10-09: 只对"我们自己写入的保证"做硬断言(版本字面量 / luci flag / i915 模块 / Firmware Date 行数);
         # 纯结构性假设(路径是否存在)只告警不判失败 —— 免得上游目录结构变化时误杀一次 5h+ 的编译
@@ -829,7 +983,6 @@ jobs:
           # 「整理文件/上传/发布/云端更新」照常跑, 版本字面量、ucode、i915、Firmware Date、
           # gzip、sha256sums 六类断言全部静默跳过, 等于发一份没校验过的固件。
           echo "::error::未找到 build_dir/target-*/root-*, 无法校验产物, 拒绝发布"
-          echo "status=failed" >> "$GITHUB_ENV"
           exit 1
         fi
         echo "== 产物自检 root: $ROOTDIR =="
@@ -931,7 +1084,7 @@ jobs:
         echo "== 产物自检通过 =="
 
     - name: 上传配置
-      if: env.UPLOAD_CONFIG == 'true'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.upload_config == 'true'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: .config_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
@@ -941,7 +1094,7 @@ jobs:
         if-no-files-found: error
 
     - name: 上传文件
-      if: env.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.upload_bin_dir == 'true'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: filename+ipk_${{ env.CODE }}_${{ env.TARGET_PROFILE }}_${{ env.Compile_Date }}
@@ -984,24 +1137,21 @@ jobs:
         # "No tag found in ref or input!"; 在整理文件阶段就失败, 不要等编译完。
         [ -n "${Compile_Date:-}" ] || { echo "!! Compile_Date 为空, release tag/固件名会失效"; exit 1; }
         [ -n "${date:-}" ] || { echo "!! date 为空, 发布固件会失败"; exit 1; }
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "firmware=$PWD" >> "$GITHUB_OUTPUT"
         echo "firmware_date=${Compile_Date}" >> "$GITHUB_OUTPUT"
         echo "ota_enabled=${REGULAR_UPDATE}" >> "$GITHUB_OUTPUT"
-        echo "BOT=TRUE" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_ENV
 
     - name: 上传固件
-      # 2026-10-20: FIRMWARE 只在「整理文件」最后写入; 若该步中途失败而 status 仍为 success,
-      # 原条件会让 env.FIRMWARE 展开成空 → path 变成以 / 开头的相对路径(行为不可预期)。补存在性判断。
-      if: env.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && env.FIRMWARE != ''
+      # 2026-11-01: 固件目录改由 organizer step output 传递, 不再写入可被构建步骤篡改的 GITHUB_ENV。
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.upload_firmware == 'true' && steps.organizer.outputs.firmware != ''
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ env.OpenWrt_name }}-${{ env.CODE }}-${{ env.TARGET_PROFILE }}-firmware-${{ env.Compile_Date }}
-        path: ${{ env.FIRMWARE }}
+        path: ${{ steps.organizer.outputs.firmware }}
         if-no-files-found: error
 
     - name: 发布信息
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.upload_release == 'true'
       run: |
         KERNEL_VER=$(egrep -o "KERNEL_PATCHVER:=[0-9]+\.[0-9]+" openwrt/target/linux/x86/Makefile | cut -d= -f2)
         KERNEL_FULL=$(egrep -o "LINUX_KERNEL_HASH-${KERNEL_VER}\.[0-9]+" openwrt/include/kernel-version.mk | cut -d- -f3)
@@ -1036,10 +1186,10 @@ jobs:
         echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt；最终配置快照见 SOURCE_LOCK.txt" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
-      # 2026-10-20: 同上, FIRMWARE 为空时 artifacts 通配会指向错误位置 → 补存在性判断
+      # 2026-11-01: 发布开关读编译前固化的 publishmeta, 固件目录读 organizer output。
       # 2026-10-30: 只有 main 能创建普通固件 release; 测试分支也会产出 release,
       # 且 target_commitish 默认 main, tag 会落在 main HEAD, 用户可能误当正式版。
-      if: env.status == 'success' && env.UPLOAD_RELEASE == 'true' && env.HAS_REPO_TOKEN == 'true' && env.FIRMWARE != '' && github.ref == 'refs/heads/main'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.upload_release == 'true' && steps.publishmeta.outputs.has_repo_token == 'true' && steps.organizer.outputs.firmware != '' && github.ref == 'refs/heads/main'
       uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
       with:
         name: ${{ env.CODE }}-${{ env.TARGET_PROFILE }}
@@ -1048,14 +1198,14 @@ jobs:
         commit: ${{ github.sha }}
         token: ${{ secrets.REPO_TOKEN }}
         bodyFile: "update_log.txt"
-        artifacts: "${{ env.FIRMWARE }}/*"
+        artifacts: "${{ steps.organizer.outputs.firmware }}/*"
         # 2026-10-28: 默认 false —— 该 action 先创建"已发布"的 release 再逐个传资产,
         # 任一资产上传失败只打 warning, 于是线上留下空/半空 release 而 CI 是绿的。
         # 设为 true 后上传出问题直接让步骤失败, 失败日志也会被归档。
         artifactErrorsFailBuild: true
 
     - name: 准备 AutoUpdate 固件
-      if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.regular_update == 'true'
       run: |
        cd openwrt
        source "${PATH1}/upgrade.sh"
@@ -1113,7 +1263,7 @@ jobs:
        ls -l
 
     - name: 上传待签名固件
-      if: env.status == 'success' && env.REGULAR_UPDATE == 'true'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.regular_update == 'true'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: autoupdate-input
@@ -1122,7 +1272,7 @@ jobs:
         retention-days: 1
 
     - name: 电报通知
-      if: env.status == 'success' && env.SERVERCHAN_SCKEY == 'true'
+      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.serverchan_sckey == 'true'
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

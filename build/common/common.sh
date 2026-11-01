@@ -145,26 +145,6 @@ fi
 
 
 ################################################################################################################
-# 判断插件冲突
-################################################################################################################
-Diy_chajian() {
-echo
-# 2026-10-21: 删掉这里的 make defconfig —— 工作流「生成配置」步骤在调用本函数后
-# **紧接着**又跑了一次, 且那次是 `make defconfig || { 报错; exit 1; }`。原来这里那次
-# 输出被 /dev/null 吞掉, 失败也看不见, 等于让 -e 静默中止; 保留带错误检查的那次即可。
-# 本函数只用 Chajianlibiao 目录内容生成 CHONGTU, 不读 .config, 去掉无副作用。
-echo "TIME b \"					插件冲突信息\"" > ${Home}/CHONGTU
-
-if [ -n "$(ls -A "${Home}/Chajianlibiao" 2>/dev/null)" ]; then
-	echo "TIME y \"  插件冲突会导致编译失败，以上操作如非您所需，请关闭此次编译，重新开始编译，避开冲突重新选择插件\"" >>CHONGTU
-	echo "TIME z \"\"" >>CHONGTU
-else
-	rm -rf CHONGTU
-fi
-}
-
-
-################################################################################################################
 # 为编译做最后处理
 ################################################################################################################
 Diy_chuli() {
@@ -191,7 +171,8 @@ awk -v b="$RC_BEGIN" -v e="$RC_END" -v legacy='# 关闭 Intel i225-V EEE' '
     if (n>0 && buf[n] ~ /^[[:space:]]*exit 0[[:space:]]*$/) n--
     while (n>0 && buf[n] ~ /^[[:space:]]*$/) n--
     for (i=1;i<=n;i++) print buf[i]
-  }' "$RC" > "$RC.new" && mv "$RC.new" "$RC"
+  }' "$RC" > "$RC.new" || { echo "!! rc.local 生成失败"; rm -f "$RC.new"; exit 1; }
+mv "$RC.new" "$RC" || { echo "!! rc.local 写入失败"; rm -f "$RC.new"; exit 1; }
 # 4) 只追加一次
 {
   echo ""
@@ -219,8 +200,31 @@ if [[ "${REPO_BRANCH}" == "19.07" ]]; then
 fi
 
 if [[ "${TARGET_BOARD}" == "x86" ]]; then
-	cp -Rf "${Home}"/build/common/Custom/DRM-I915 target/linux/x86/DRM-I915
-	for X in $(ls -1 target/linux/x86 | grep "config-"); do echo -e "\n$(cat target/linux/x86/DRM-I915)" >> target/linux/x86/${X}; done
+	DRM_SRC="${Home}/build/common/Custom/DRM-I915"
+	DRM_DST="target/linux/x86/DRM-I915"
+	DRM_BEGIN='# >>> hermes-managed DRM-I915 >>>'
+	DRM_END='# <<< hermes-managed DRM-I915 <<<'
+	[ -s "$DRM_SRC" ] || { echo "!! DRM-I915 配置源不存在或为空: $DRM_SRC"; exit 1; }
+	cp -f "$DRM_SRC" "$DRM_DST" || { echo "!! 无法复制 DRM-I915 配置: $DRM_DST"; exit 1; }
+
+	DRM_CONFIGS=0
+	for X in target/linux/x86/config-*; do
+		[ -f "$X" ] || continue
+		DRM_CONFIGS=$((DRM_CONFIGS + 1))
+		if ! grep -qF "$DRM_BEGIN" "$X"; then
+			{
+				echo ""
+				echo "$DRM_BEGIN"
+				cat "$DRM_DST"
+				echo "$DRM_END"
+			} >> "$X" || { echo "!! 无法写入 DRM-I915 配置: $X"; exit 1; }
+		fi
+		[ "$(grep -cF "$DRM_BEGIN" "$X")" -eq 1 ] || { echo "!! $X 的 DRM-I915 起始标记不是 1 个"; exit 1; }
+		[ "$(grep -cF "$DRM_END" "$X")" -eq 1 ] || { echo "!! $X 的 DRM-I915 结束标记不是 1 个"; exit 1; }
+		grep -q '^CONFIG_DRM_I915=' "$X" || { echo "!! $X 缺少 CONFIG_DRM_I915"; exit 1; }
+	done
+	[ "$DRM_CONFIGS" -gt 0 ] || { echo "!! target/linux/x86 下没有 config-* 配置文件"; exit 1; }
+	echo "== DRM-I915 配置已幂等写入 ${DRM_CONFIGS} 个 config 文件 =="
 fi
 
 if [[ "${BY_INFORMATION}" == "true" ]]; then
@@ -372,15 +376,6 @@ echo
 TIME z "  下面将使用 [ $(nproc) 线程 ] 编译固件"
 echo
 
-if [ -n "$(ls -A "${Home}/Chajianlibiao" 2>/dev/null)" ]; then
-	echo
-	echo
-	chmod -R +x ${Home}/CHONGTU
-	source ${Home}/CHONGTU
-	rm -rf {CHONGTU,Chajianlibiao}
-	echo
-	echo
-fi
 if [ -n "$(ls -A "${Home}/Plug-in" 2>/dev/null)" ]; then
 	TIME r "	      已选插件列表"
 	chmod -R +x ${Home}/Plug-in
