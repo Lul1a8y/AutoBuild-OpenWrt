@@ -568,7 +568,10 @@ jobs:
         }
         # 2026-11-01: REGULAR_UPDATE 在「编译信息」之后采集, 允许 nanopi/armvirt
         # 的 OTA 目标适配覆盖; 这是唯一合法的发布开关覆盖点。
-        emit regular_update "${REGULAR_UPDATE:-}"
+        # 旧语义允许 settings.ini 省略该开关, 空值等价于 false; 这里不要用
+        # require 把空值变成构建失败。
+        REGULAR_UPDATE="${REGULAR_UPDATE:-false}"
+        emit regular_update "${REGULAR_UPDATE}"
         emit by_information "${BY_INFORMATION:-}"
         emit upload_bin_dir "${UPLOAD_BIN_DIR:-}"
         emit upload_config "${UPLOAD_CONFIG:-}"
@@ -604,6 +607,8 @@ jobs:
         # 契约: BUILD_SOURCE.txt / SOURCE_LOCK.txt 必须在进入本步骤前最终定稿。
         # 本步骤之后、恢复步骤校验前, 任何步骤都不得再追加或改写这两个文件, 否则
         # 仓库指纹会误报, 恢复步骤会直接失败。
+        # 覆盖范围: 当前矩阵只构建 Lede_source; 以后新增/切换 target 时, 必须把
+        # build/<target> 同步加入下面的 find 列表, 否则该 target 的构建脚本不在指纹内。
         repo_hash="$(find build/common build/Lede_source .github/workflows scripts BUILD_SOURCE.txt SOURCE_LOCK.txt -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
         [ -n "$repo_hash" ] || { echo "::error::无法计算仓库指纹"; exit 1; }
         emit repo_hash "$repo_hash"
