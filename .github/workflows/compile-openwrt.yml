@@ -39,12 +39,12 @@ jobs:
     # 而是在降级重编前检查剩余时间(见「编译固件」), 保证失败现场能在 job 被硬杀前归档。
     timeout-minutes: 355
     outputs:
-      # 2026-11-01: publishmeta 在任何 clone/feeds/make 之前固化, 是唯一可信发布门禁。
-      # 下游 sign/publish 只读这些 outputs, 不读构建后可能被污染的 env.*。
-      regular_update: ${{ steps.publishmeta.outputs.regular_update }}
+      # 2026-11-01: publishmeta 在任何 clone/feeds/make 之前固化上传/发布开关与时间。
+      # OTA 目标适配(编译信息)是唯一合法的 workflow 级覆盖, 因此 ota_enabled 取
+      # trustedmeta 在编译前采集到的实际值, 不取 publishmeta 的原始设置。
       has_repo_token: ${{ steps.publishmeta.outputs.has_repo_token }}
       firmware_date: ${{ steps.publishmeta.outputs.compile_date }}
-      ota_enabled: ${{ steps.publishmeta.outputs.regular_update }}
+      ota_enabled: ${{ steps.trustedmeta.outputs.regular_update }}
 
     name: 编译 "${{matrix.target}}"
     strategy:
@@ -153,7 +153,8 @@ jobs:
           esac
         done
         {
-          printf 'regular_update=%s\n' "${REGULAR_UPDATE:-}"
+          # 注意: 这里不固化 REGULAR_UPDATE。它是唯一允许被「编译信息」按目标
+          # 合法覆盖的开关 (nanopi/armvirt 不支持 OTA), 由 trustedmeta 在编译前采集。
           printf 'upload_bin_dir=%s\n' "${UPLOAD_BIN_DIR:-}"
           printf 'upload_config=%s\n' "${UPLOAD_CONFIG:-}"
           printf 'upload_firmware=%s\n' "${UPLOAD_FIRMWARE:-}"
@@ -561,7 +562,10 @@ jobs:
           esac
           printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
         }
+        # 2026-11-01: REGULAR_UPDATE 在「编译信息」之后采集, 允许 nanopi/armvirt
+        # 的 OTA 目标适配覆盖; 这是唯一合法的发布开关覆盖点。
         emit regular_update "${REGULAR_UPDATE:-}"
+        emit by_information "${BY_INFORMATION:-}"
         emit upload_bin_dir "${UPLOAD_BIN_DIR:-}"
         emit upload_config "${UPLOAD_CONFIG:-}"
         emit upload_firmware "${UPLOAD_FIRMWARE:-}"
@@ -584,6 +588,9 @@ jobs:
           eval "value=\${$name:-}"
           [ -n "$value" ] || { echo "::error::可信元数据 ${name} 为空"; exit 1; }
         done
+        # 契约: BUILD_SOURCE.txt / SOURCE_LOCK.txt 必须在进入本步骤前最终定稿。
+        # 本步骤之后、恢复步骤校验前, 任何步骤都不得再追加或改写这两个文件, 否则
+        # 仓库指纹会误报, 恢复步骤会直接失败。
         repo_hash="$(find build/common build/Lede_source .github/workflows scripts BUILD_SOURCE.txt SOURCE_LOCK.txt -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
         [ -n "$repo_hash" ] || { echo "::error::无法计算仓库指纹"; exit 1; }
         emit repo_hash "$repo_hash"
@@ -894,7 +901,8 @@ jobs:
         T_TARGET_PROFILE: ${{ steps.trustedmeta.outputs.target_profile }}
         T_TARGET_BOARD: ${{ steps.trustedmeta.outputs.target_board }}
         T_TARGET_SUBTARGET: ${{ steps.trustedmeta.outputs.target_subtarget }}
-        T_REGULAR_UPDATE: ${{ steps.publishmeta.outputs.regular_update }}
+        T_REGULAR_UPDATE: ${{ steps.trustedmeta.outputs.regular_update }}
+        T_BY_INFORMATION: ${{ steps.trustedmeta.outputs.by_information }}
         T_UPLOAD_BIN_DIR: ${{ steps.publishmeta.outputs.upload_bin_dir }}
         T_UPLOAD_CONFIG: ${{ steps.publishmeta.outputs.upload_config }}
         T_UPLOAD_FIRMWARE: ${{ steps.publishmeta.outputs.upload_firmware }}
@@ -952,6 +960,7 @@ jobs:
           printf 'TARGET_BOARD=%s\n' "$T_TARGET_BOARD"
           printf 'TARGET_SUBTARGET=%s\n' "$T_TARGET_SUBTARGET"
           printf 'REGULAR_UPDATE=%s\n' "$T_REGULAR_UPDATE"
+          printf 'BY_INFORMATION=%s\n' "$T_BY_INFORMATION"
           printf 'UPLOAD_BIN_DIR=%s\n' "$T_UPLOAD_BIN_DIR"
           printf 'UPLOAD_CONFIG=%s\n' "$T_UPLOAD_CONFIG"
           printf 'UPLOAD_FIRMWARE=%s\n' "$T_UPLOAD_FIRMWARE"
@@ -1103,6 +1112,8 @@ jobs:
 
     - name: 整理文件
       id: organizer
+      # 显式保留隐式 success() 语义: 前面的上传步骤失败时, 不要继续整理/发布。
+      if: success() && steps.compile.outcome == 'success'
       run: |
         cd openwrt
         echo "文件系统        类型   容量  已用  可用 使用% 挂载点"
@@ -1183,10 +1194,11 @@ jobs:
         echo "| 192.168.50.2 | root | password | 12306 |" >> update_log.txt
         echo "" >> update_log.txt
         echo "> OpenClash 控制面板密码不再写死在仓库: 构建时由 secret OPENCLASH_DASH_PASS 注入, 未配置则随机生成 — 可在路由器执行 \`uci get openclash.@config[0].dashboard_password\` 查看" >> update_log.txt
-        echo "> 本固件的源码/配置来源见同目录 BUILD_SOURCE.txt；最终配置快照见 SOURCE_LOCK.txt" >> update_log.txt
+        echo "> 本固件的源码/构建来源见同目录 BUILD_SOURCE.txt；SOURCE_LOCK.txt 为同一快照副本，不包含最终 .config" >> update_log.txt
         echo "> 默认 root 密码为 password, 请首次登录后立即修改" >> update_log.txt
     - name: 发布固件
-      # 2026-11-01: 发布开关读编译前固化的 publishmeta, 固件目录读 organizer output。
+      # 2026-11-01: 上传/发布开关读编译前固化的 publishmeta; OTA 开关读 trustedmeta。
+      # 固件目录读 organizer output。
       # 2026-10-30: 只有 main 能创建普通固件 release; 测试分支也会产出 release,
       # 且 target_commitish 默认 main, tag 会落在 main HEAD, 用户可能误当正式版。
       if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.upload_release == 'true' && steps.publishmeta.outputs.has_repo_token == 'true' && steps.organizer.outputs.firmware != '' && github.ref == 'refs/heads/main'
@@ -1205,7 +1217,7 @@ jobs:
         artifactErrorsFailBuild: true
 
     - name: 准备 AutoUpdate 固件
-      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.regular_update == 'true'
+      if: steps.compile.outcome == 'success' && steps.trustedmeta.outputs.regular_update == 'true'
       run: |
        cd openwrt
        source "${PATH1}/upgrade.sh"
@@ -1263,7 +1275,7 @@ jobs:
        ls -l
 
     - name: 上传待签名固件
-      if: steps.compile.outcome == 'success' && steps.publishmeta.outputs.regular_update == 'true'
+      if: steps.compile.outcome == 'success' && steps.trustedmeta.outputs.regular_update == 'true'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: autoupdate-input
