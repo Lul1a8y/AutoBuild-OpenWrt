@@ -282,8 +282,9 @@ jobs:
         ln -sf /${{matrix.target}}/openwrt $GITHUB_WORKSPACE/openwrt
         echo "Home=${GITHUB_WORKSPACE}/openwrt" >> $GITHUB_ENV
         echo "PATH1=${GITHUB_WORKSPACE}/openwrt/build/${{matrix.target}}" >> $GITHUB_ENV
-        # 2026-11-01: dl 缓存 key 需要主源码 commit; 上游 bump 时让 dl 缓存
-        # 与新源码显式关联, toolchain 缓存另用 TOOLCHAIN_FP 判断。
+        # 2026-11-01: dl 缓存主 key 含源码/feed; restore-keys 允许先复用上一份下载集,
+        # make download 会校验哈希, 旧 dl 只影响速度, 不影响正确性;
+        # toolchain 缓存另用 TOOLCHAIN_FP 判断。
         SOURCE_SHA="$(git rev-parse HEAD)"
         echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
         echo "sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
@@ -398,7 +399,7 @@ jobs:
           echo "config sha256: $(sha256sum .config | awk '{print $1}')"
           echo "lede commit: $(git rev-parse HEAD) ($(git log -1 --format=%cI))"
           # 2026-10-17: 补目标/架构/内核 pin —— 原先只记 commit, 事后分不清这版是 6.6 还是 6.18
-          echo "target/profile: (见下方 make defconfig 之后补记)"
+          # target/profile 在 make defconfig 之后追加, 避免占位行被解析。
           echo "kernel: $(grep -m1 '^KERNEL_PATCHVER' target/linux/x86/Makefile 2>/dev/null || echo '(未 pin)')  testing: $(grep -m1 '^KERNEL_TESTING_PATCHVER' target/linux/x86/Makefile 2>/dev/null)"
           echo "--- feeds / 第三方源 commit ---"
           for d in feeds/* package/kenzok8 package/kenzok8-small package/openclash package/helloworld feeds/luci/applications/luci-app-autoupdate; do
@@ -718,7 +719,8 @@ jobs:
         # 2026-10-17: 但"目录存在"不等于"这份 toolchain 匹配本次配置" —— restore-keys 是前缀匹配,
         # .config 一改仍会把旧 staging_dir 整树恢复回来。故加构建指纹(与缓存 key 同一输入):
         #   staging_dir/.hermes-build-fingerprint 与本次指纹不一致 → 清 toolchain, 安全降级走冷编。
-        # 2026-11-01: dl 缓存 key 已包含 source SHA; toolchain 缓存 key 用 TOOLCHAIN_FP。
+        # 2026-11-01: dl 主 key 含 source SHA, 但 restore-keys 仍可能复用上一份下载集;
+        # make download 会校验哈希, 旧 dl 只影响速度。toolchain 缓存 key 用 TOOLCHAIN_FP,
         # 这里只校验 toolchain 指纹, 不再重复计算完整 key。
         # 2026-10-30: CACHE_FP 仅用于旧缓存兼容/诊断; TOOLCHAIN_FP(只含 target/arch/compiler/libc)判断
         # toolchain 是否可复用。运行期文件(firewall/uci-defaults)变化不再导致 toolchain 冷编。
@@ -1619,7 +1621,7 @@ jobs:
     # 5 个缓存曾达到 13.12GiB, 超过默认 10GB。构建结束后只保留
     # 最新一份 dl/toolchain/ccache, 并清掉 v2/v3/package 遗留缓存。
     needs: build
-    if: always() && github.ref == 'refs/heads/main'
+    if: needs.build.result == 'success' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
@@ -1627,6 +1629,7 @@ jobs:
       contents: read
     steps:
       - name: 删除旧缓存
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1636,15 +1639,31 @@ jobs:
           API="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/caches"
           CFG="$(mktemp)"
           LIST="$(mktemp)"
+          RAW="$(mktemp)"
           umask 077
-          trap 'rm -f "$CFG" "$LIST"' EXIT
+          trap 'rm -f "$CFG" "$LIST" "$RAW"' EXIT
           printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$GH_TOKEN" > "$CFG"
-          curl -fsSL --retry 3 --retry-delay 2 --config "$CFG" "${API}?per_page=100" -o "$LIST"
+          page=1
+          while :; do
+            PAGE="$(mktemp)"
+            if ! curl -fsSL --retry 3 --retry-delay 2 --config "$CFG" "${API}?per_page=100&page=${page}" -o "$PAGE"; then
+              echo "::warning::缓存列表获取失败, 跳过清理"
+              rm -f "$PAGE"
+              exit 0
+            fi
+            count="$(jq '.actions_caches | length' "$PAGE")"
+            jq -c '.actions_caches[]' "$PAGE" >> "$RAW"
+            rm -f "$PAGE"
+            [ "$count" -lt 100 ] && break
+            page=$((page + 1))
+          done
+          jq -s '{actions_caches: .}' "$RAW" > "$LIST"
           delete_cache() {
             local id="$1" code
             code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE --config "$CFG" "${API}/${id}")"
             case "$code" in
               204|404) ;;
+              401|403|429|5??) echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 跳过"; return 0 ;;
               *) echo "::warning::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
             esac
           }
