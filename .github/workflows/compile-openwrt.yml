@@ -18,7 +18,7 @@ env:
   # 2026-10-09: REPO_TOKEN 不再全局注入 —— 只在真正需要写权限的步骤用 step-level env 传;
   # if 条件改用下面按 secrets 计算的 HAS_REPO_TOKEN 判断(原先是每个 step 都能拿到可写 token)
   TZ: Asia/Shanghai
-  # 2026-11-01: 限制 ccache 体积, 避免和 dl/包缓存一起超过 GitHub 单仓库 10GB 配额。
+  # 2026-11-01: 限制 ccache 体积, 避免和 dl/toolchain 缓存一起超过 GitHub 单仓库 10GB 配额。
   CCACHE_MAXSIZE: 2G
 
 # 2026-10-09: 默认 GITHUB_TOKEN 收窄为只读(发布/上传走 repo 级 PAT, 不受此影响)
@@ -282,12 +282,12 @@ jobs:
         ln -sf /${{matrix.target}}/openwrt $GITHUB_WORKSPACE/openwrt
         echo "Home=${GITHUB_WORKSPACE}/openwrt" >> $GITHUB_ENV
         echo "PATH1=${GITHUB_WORKSPACE}/openwrt/build/${{matrix.target}}" >> $GITHUB_ENV
-        # 2026-11-01: 缓存 key 需要主源码 commit; 上游 bump 时让 toolchain/dl 缓存
-        # 与新源码显式关联, 不再靠宽前缀命中旧 staging。
+        # 2026-11-01: dl 缓存 key 需要主源码 commit; 上游 bump 时让 dl 缓存
+        # 与新源码显式关联, toolchain 缓存另用 TOOLCHAIN_FP 判断。
         SOURCE_SHA="$(git rev-parse HEAD)"
         echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
         echo "sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
-        # 2026-11-01: 包缓存必须和 feed HEAD 对齐, 否则上游 feed 更新后仍可能命中旧包。
+        # 2026-11-01: dl 缓存必须和 feed HEAD 对齐, 否则上游 feed 更新后仍可能复用旧下载集。
         FEEDS_FP="$(
           for d in feeds/*; do
             [ -d "$d/.git" ] || continue
@@ -297,7 +297,6 @@ jobs:
         echo "feeds=${FEEDS_FP}" >> "$GITHUB_OUTPUT"
 
     - name: 加载设置
-      id: diy
       env:
         # 2026-10-09: OpenClash 面板密码不再入库(public 仓库里明文=已泄露) —— 构建时注入:
         # 仓库 secret OPENCLASH_DASH_PASS 优先; 未配置则本次随机生成(可在路由器上 uci get 读取)
@@ -372,15 +371,6 @@ jobs:
           source "${PATH1}/upgrade.sh"
           Diy_Part1
         fi
-        # 2026-11-01: 第三方包仓是 tip clone, 不在 feeds/ 里; 包缓存必须跟它们的 HEAD 对齐。
-        PKG_SRC_FP="$(
-          for d in package/kenzok8 package/kenzok8-small package/openclash package/helloworld; do
-            [ -d "$d/.git" ] || continue
-            printf '%s %s\n' "$d" "$(git -C "$d" rev-parse HEAD 2>/dev/null || true)"
-          done | sort | sha256sum | awk '{print $1}'
-        )"
-        echo "pkg_src=${PKG_SRC_FP}" >> "$GITHUB_OUTPUT"
-
     - name: 校验 OTA 依赖(公钥 + openssl)
       # 2026-10-31(O3): AutoUpdate 验签硬依赖 /etc/firmware-signing.pub 与 /usr/bin/openssl。
       # 公钥只在 Lede 源的文件树里; 换源/自定义 config 时缺任一, 设备端 OTA 会永久 fail-closed。
@@ -720,17 +710,6 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-${{ matrix.target }}-ccache-
 
-    - name: 加载包缓存(仅精确 key)
-      # 2026-11-01: target staging/build_dir 容易和新源码/feed 混用, 不能走宽前缀恢复。
-      # 只有 source SHA + feed HEAD + 配置/补丁/文件全部一致才恢复, 否则保持空目录冷编。
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          /${{ matrix.target }}/openwrt/staging_dir/target-*
-          /${{ matrix.target }}/openwrt/build_dir/target-*
-        key: ${{ runner.os }}-${{ matrix.target }}-pkg-${{ steps.source.outputs.sha }}-${{ steps.source.outputs.feeds }}-${{ steps.diy.outputs.pkg_src }}-${{ hashFiles('SOURCE_EXTRA.txt', format('build/{0}/.config', matrix.target), format('build/{0}/settings.ini', matrix.target), 'build/common/**', format('build/{0}/diy-part.sh', matrix.target), format('build/{0}/patches/**', matrix.target)) }}
-        # 故意不写 restore-keys: 包产物只能精确复用。
-
     - name: 判断缓存复用
       id: cachecheck
       run: |
@@ -800,7 +779,7 @@ jobs:
             # dl/ 仍保留，不需要重新下载源码包。
             echo "::warning::toolchain 指纹不一致(${OLD_TC:0:16} ≠ ${TOOLCHAIN_FP:0:16}) → 清理 toolchain 缓存并冷编"
             rm -rf "$SD"/toolchain-* "$BD"/toolchain-*
-            # 2026-11-01: 包缓存是精确 key, 但 toolchain 不可信时不能让 target staging 继续复用。
+            # 2026-11-01: toolchain 不可信时不能让 target staging 继续复用。
             rm -rf "$SD"/target-* "$BD"/target-*
             rm -f "$SD/.hermes-toolchain-fingerprint" "$SD/.hermes-build-fingerprint"
             echo "hit=false" >> $GITHUB_OUTPUT
