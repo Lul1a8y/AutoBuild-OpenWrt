@@ -47,7 +47,7 @@ bash /bin/AutoUpdate.sh				[保留配置更新]
 bash /bin/AutoUpdate.sh	-n			[不保留配置更新]
 bash /bin/AutoUpdate.sh	-N			[不保留配置更新(等同于 -n)]
 bash /bin/AutoUpdate.sh	-f			[强制更新固件(保留配置)]
-bash /bin/AutoUpdate.sh	-s			[强制更新固件(不保留配置, 跳过 -T 兼容性检查; 仍先做 sysupgrade -b 备份)]
+bash /bin/AutoUpdate.sh	-s			[强制更新固件(不保留配置, 不自动备份, 跳过 -T 兼容性检查)]
 bash /bin/AutoUpdate.sh	-u			[自动更新(保留配置, 不交互)]
 bash /bin/AutoUpdate.sh	-w			[仅写入版本信息, 不下载/刷机]
 bash /bin/AutoUpdate.sh	-g			[已停用: 18.06/19.07/21.02 旧通道均已 EOL]
@@ -266,8 +266,8 @@ else
 			TIME h "执行: 更新固件(不保留配置)"
 		;;
 		-s)
-			# 2026-11-02(O6/O23): -s 仍是强制更新且不保留配置(跳过 -T), 但刷机前
-			# 还要做 sysupgrade -b 备份; 备份成功后把 -f <备份> 追加到下面的原选项。
+			# 2026-11-02(O6/O23): -s 是强制更新且不保留配置(跳过 -T)。注意不能追加
+			# -f <备份>: LEDE sysupgrade 的 -f 会设置 SAVE_CONFIG=1, 反而覆盖 -n。
 			export Force_Update=1
 			export Upgrade_Options="sysupgrade -F -n"
 			TIME h "执行: 强制更新固件(不保留配置)"
@@ -659,7 +659,9 @@ TIME g "正在更新固件,请耐心等待 ..."
 # 二进制实现的(设备实测 PATH=/nonexistent busybox tar -czf x → "can't execute 'gzip'"),
 # 而下一条 sysupgrade -b 内部就是 tar czf → 删掉 gzip 会让备份失败、退化成不保留配置升级。
 # 镜像解压走 get_image 的 busybox zcat, 不需要外部 gzip, 所以这一步直接去掉。
-if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]] || [[ "${Force_Update}" == 1 ]]; then
+# 2026-11-02(O6): -n/-s 明确不保留配置; 不能生成并传递 -f 备份, 否则 LEDE sysupgrade
+# 的 CONF_IMAGE 分支会强制 SAVE_CONFIG=1, 反而覆盖 -n, 把配置恢复回来。
+if [[ "${Upgrade_Options}" != *" -n"* ]] && { [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]] || [[ "${Force_Update}" == 1 ]]; }; then
 	# 2026-10-23: /etc/deletefile 由 $DELETE 控制, 只有 Lienol/Mortal 的 diy-part.sh 会写,
 	# Lede 分支从来不生成。原来裸 source 一个不存在的文件在 ash 下会直接退出(rc=2),
 	# 等于手动升级通道在某些 shell 下静默失败; 加 [ -f ] 守卫, 存在才 source。
@@ -675,8 +677,8 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]] || [[ "${Force
 	#   原来失败兜底写的是 sysupgrade -q, 注释还说是"不保留配置" —— -q 只是静默, -n 才不保留配置。
 	#   现在备份失败时恢复原选项, 让 sysupgrade 用自己的自动备份并如实报错,
 	#   而不是假装配置已经被保住了。
-	# 2026-11-02(O6/O23): -s 仍执行 sysupgrade -F -n, 但也要先做备份; 成功后把 -f <备份>
-	# 追加到原选项(-F/-n/-q 不丢失), 备份失败则恢复原选项而不是裸 sysupgrade。
+	# 2026-11-02(O6/O23): 只有保留配置的路径才备份并追加 -f <备份>;
+	# -n/-s 不生成备份, 避免 LEDE sysupgrade 把配置恢复回来。
 	ORIG_Upgrade_Options="${Upgrade_Options}"
 	if ( umask 077; sysupgrade -b "${Download_Path}/back.tar.gz" ); then
 		chmod 600 "${Download_Path}/back.tar.gz" 2>/dev/null || true

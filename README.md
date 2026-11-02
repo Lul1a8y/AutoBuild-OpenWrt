@@ -19,8 +19,8 @@
 - Execute bash /bin/AutoUpdate.sh -n Do not keep configuration updates
 - 执行 **`bash /bin/AutoUpdate.sh -N`** 不保留配置更新（`-n` 别名）
 - Execute bash /bin/AutoUpdate.sh -N Do not keep configuration updates (alias of `-n`)
-- 执行 **`bash /bin/AutoUpdate.sh -s`** 强制更新且不保留配置（`sysupgrade -F -n`，跳过 `-T` 兼容性检查；升级前仍会执行 `sysupgrade -b` 备份）
-- Execute bash /bin/AutoUpdate.sh -s Force update without keeping config (`sysupgrade -F -n`, skips the `-T` compatibility check; still creates a `sysupgrade -b` backup first)
+- 执行 **`bash /bin/AutoUpdate.sh -s`** 强制更新且不保留配置（`sysupgrade -F -n`，跳过 `-T` 兼容性检查；不自动备份）
+- Execute bash /bin/AutoUpdate.sh -s Force update without keeping config (`sysupgrade -F -n`, skips the `-T` compatibility check; no automatic backup)
 - 执行 **`bash /bin/AutoUpdate.sh -u`** 自动/无人值守更新（保留配置，不交互）
 - Execute bash /bin/AutoUpdate.sh -u Automatic/unattended update (keep config, no prompts)
 - 执行 **`bash /bin/AutoUpdate.sh -w`** 仅写入版本信息（不下载、不刷机）
