@@ -577,6 +577,13 @@ grep -q 'wget -q --no-check-certificate --no-use-server-timestamps --timeout=40 
   || { echo "!! zzz_api 主备对调后变量被吞(perl 插值?), 下载地址会变成 /zzz_api"; exit 1; }
 echo "== zzz_api 下载改为 wget 优先 =="
 
+# 2026-11-02(O8): 包内 AutoUpdate 的固件/清单/签名/zzz_api 下载也去掉
+# --no-check-certificate; 设备 CA 验证 HTTPS, 固件来源仍由完整 SHA256 + Ed25519 决定。
+perl -0pi -e 's/\s--no-check-certificate//g' "$AU_BIN"
+if grep -q -- '--no-check-certificate' "$AU_BIN"; then
+  echo "!! 包内 AutoUpdate 仍存在 --no-check-certificate"; exit 1
+fi
+
 # 2026-10-24: 上面几处补丁都用 `> "$AU_BIN.new" && mv` 写过文件, 新文件按 umask 建出来是
 # 0644 —— opkg 照 644 装进镜像, 结果 /usr/bin/AutoUpdate 不可执行(LuCI 直接 exec 它),
 # 自动更新整条链路废掉。设备实测: -rw-r--r-- root root 15925 /usr/bin/AutoUpdate,

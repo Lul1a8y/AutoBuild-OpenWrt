@@ -9,14 +9,26 @@
 
    Command line or SSH link OP execute the following command to complete the firmware update
 
+> `/bin/AutoUpdate.sh` 只在构建时 `REGULAR_UPDATE=true` 的 OTA 固件中存在；未启用 OTA 的构建没有该脚本，请用 LuCI 上传固件或手动刷机。
+>
+> `/bin/AutoUpdate.sh` is only present in OTA builds (`REGULAR_UPDATE=true` at build time); builds without OTA do not include it — use LuCI firmware upload or manual flashing.
+
 - 执行 **`bash /bin/AutoUpdate.sh`** 保留配置更新
 - Execute bash /bin/AutoUpdate.sh Keep configuration updates
 - 执行 **`bash /bin/AutoUpdate.sh -n`** 不保留配置更新
 - Execute bash /bin/AutoUpdate.sh -n Do not keep configuration updates
+- 执行 **`bash /bin/AutoUpdate.sh -N`** 不保留配置更新（`-n` 别名）
+- Execute bash /bin/AutoUpdate.sh -N Do not keep configuration updates (alias of `-n`)
+- 执行 **`bash /bin/AutoUpdate.sh -s`** 强制更新且不保留配置（`sysupgrade -F -n`，跳过 `-T` 兼容性检查；升级前仍会执行 `sysupgrade -b` 备份）
+- Execute bash /bin/AutoUpdate.sh -s Force update without keeping config (`sysupgrade -F -n`, skips the `-T` compatibility check; still creates a `sysupgrade -b` backup first)
+- 执行 **`bash /bin/AutoUpdate.sh -u`** 自动/无人值守更新（保留配置，不交互）
+- Execute bash /bin/AutoUpdate.sh -u Automatic/unattended update (keep config, no prompts)
+- 执行 **`bash /bin/AutoUpdate.sh -w`** 仅写入版本信息（不下载、不刷机）
+- Execute bash /bin/AutoUpdate.sh -w Write version info only (no download, no flash)
 
 > 默认命令会保留 `/etc/config`（LAN、PPPoE、ADH 等）；`-n` 不保留，适合全新安装或配置已损坏时。
 >
-> 普通 OTA 升级会先执行 `sysupgrade -T` 检查镜像兼容性，失败会中止；`sysupgrade -F` 只保留给明确的手动强制刷机。
+> 普通 OTA 升级在下载并校验固件后、写备份前执行 `sysupgrade -T` 检查镜像兼容性，失败会中止；`-f`/`-s` 强制模式跳过 `-T`，只用于明确的手动强制刷机。
 >
 > `AutoUpdate.sh -g` 的旧通道转换菜单（18.06 / 19.07 / 21.02）已停用；这些通道均已 EOL，请手动刷入当前固件。
 

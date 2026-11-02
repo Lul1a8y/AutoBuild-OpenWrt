@@ -10,6 +10,7 @@ Version=V6.5
 write_cloud_name() {
 	[ -n "$1" ] || return 0
 	if [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		[ "$(cat /etc/CLOUD_Name 2>/dev/null)" = "$1" ] && return 0
 		echo "$1" > /etc/CLOUD_Name
 	else
 		echo "!! 固件名含非法字符, 跳过写 /etc/CLOUD_Name: $1" >&2
@@ -44,7 +45,11 @@ echo -e "${Yellow}命令用途：
 
 bash /bin/AutoUpdate.sh				[保留配置更新]
 bash /bin/AutoUpdate.sh	-n			[不保留配置更新]
+bash /bin/AutoUpdate.sh	-N			[不保留配置更新(等同于 -n)]
 bash /bin/AutoUpdate.sh	-f			[强制更新固件(保留配置)]
+bash /bin/AutoUpdate.sh	-s			[强制更新固件(不保留配置, 跳过 -T 兼容性检查; 仍先做 sysupgrade -b 备份)]
+bash /bin/AutoUpdate.sh	-u			[自动更新(保留配置, 不交互)]
+bash /bin/AutoUpdate.sh	-w			[仅写入版本信息, 不下载/刷机]
 bash /bin/AutoUpdate.sh	-g			[已停用: 18.06/19.07/21.02 旧通道均已 EOL]
 bash /bin/AutoUpdate.sh	-c			[更换Github地址]
 bash /bin/AutoUpdate.sh	-t			[执行测试模式(只运行,不安装,查看更新固件操作流程)]
@@ -58,7 +63,7 @@ echo
 # 2026-11-01(O10): -h/-l 和非法参数只读本地缓存, 不访问 GitHub, 也不创建
 # /etc/CLOUD_Name、/etc/openwrt_ver。帮助页没有缓存时显示“未缓存”, 由正常升级写入。
 if [[ -f /etc/CLOUD_Name ]]; then
-	export CLOUD_Name="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | select_latest_firmware)" > /dev/null 2>&1
+	export CLOUD_Name="$(egrep -o "${Egrep_Firmware_Regex}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" /etc/CLOUD_Name | select_latest_firmware)" > /dev/null 2>&1
 else
 	export CLOUD_Name="未缓存"
 fi
@@ -99,6 +104,9 @@ Purple="\033[1;95m"
 	echo
 	exit 1
 }
+# 2026-11-02(O19): Egrep_Firmware 里的 . 在 egrep 中是通配符; 只在三处 egrep 使用
+# 转义后的版本, 后面的 case 命名空间检查仍使用原始字面量。
+Egrep_Firmware_Regex="${Egrep_Firmware//./\\.}"
 export Input_Option=$1
 export Input_Other=$2
 export Apidz="${Github##*com/}"
@@ -193,8 +201,7 @@ fi
 rm -rf "${Download_Path}"
 mkdir -p -m 700 "${Download_Path}" || { echo "!! 无法创建私有下载目录 ${Download_Path}" >&2; exit 1; }
 [ -O "${Download_Path}" ] && [ ! -L "${Download_Path}" ] || { echo "!! ${Download_Path} 所有者异常" >&2; exit 1; }
-opkg list | awk '{print $1}' > "${Download_Path}/Installed_PKG_List"
-export PKG_List="${Download_Path}/Installed_PKG_List"
+# 2026-11-02(O22): 已移除无人消费的 opkg 包清单生成。
 
 GET_PID() {
 	local Result
@@ -259,7 +266,8 @@ else
 			TIME h "执行: 更新固件(不保留配置)"
 		;;
 		-s)
-			# -s 的语义是强制更新, 同时跳过版本比较交互; 与 -f 保持一致。
+			# 2026-11-02(O6/O23): -s 仍是强制更新且不保留配置(跳过 -T), 但刷机前
+			# 还要做 sysupgrade -b 备份; 备份成功后把 -f <备份> 追加到下面的原选项。
 			export Force_Update=1
 			export Upgrade_Options="sysupgrade -F -n"
 			TIME h "执行: 强制更新固件(不保留配置)"
@@ -321,9 +329,26 @@ else
 				# /usr/bin/AutoUpdate 读的是 /etc/openwrt_update 里的 GITHUB_LINK。
 				# 以前只改 openwrt_info, 换完仓库会出现"LuCI 查新仓库、固件仍从旧仓库下"的双源。
 				if [ -f /etc/openwrt_update ]; then
+					# 2026-11-02(O16): 在 /etc 内生成临时副本, 改完再 mv 原子替换;
+					# 中途失败不会留下被截断/写了一半的 /etc/openwrt_update。
+					UPDATE_TMP="$(mktemp /etc/openwrt_update.XXXXXX)" || {
+						TIME r "无法创建 /etc/openwrt_update 临时文件, 未修改 Github 地址"; exit 1
+					}
+					if ! cp -p /etc/openwrt_update "${UPDATE_TMP}"; then
+						rm -f "${UPDATE_TMP}"
+						TIME r "/etc/openwrt_update 复制失败, 未修改 Github 地址"; exit 1
+					fi
 					Safe_URL="$(printf '%s' "${Input_Other}" | sed 's/[\\&]/\\&/g')"
-					sed -i "s?^GITHUB_LINK=.*?GITHUB_LINK=\"${Safe_URL}\"?" /etc/openwrt_update
+					if ! sed -i "s?^GITHUB_LINK=.*?GITHUB_LINK=\"${Safe_URL}\"?" "${UPDATE_TMP}"; then
+						unset Safe_URL
+						rm -f "${UPDATE_TMP}"
+						TIME r "/etc/openwrt_update 写入失败, 未修改 Github 地址"; exit 1
+					fi
 					unset Safe_URL
+					if ! mv -f "${UPDATE_TMP}" /etc/openwrt_update; then
+						rm -f "${UPDATE_TMP}"
+						TIME r "/etc/openwrt_update 替换失败, 未修改 Github 地址"; exit 1
+					fi
 					# 2026-10-27: 原来失败只打印提示, 随后 exit 0 —— 同步失败也报成功。
 					if grep -q "^GITHUB_LINK=\"${Input_Other}\"$" /etc/openwrt_update; then
 						TIME y "/etc/openwrt_update 的 GITHUB_LINK 已同步"
@@ -385,7 +410,7 @@ if [[ $? -ne 0 ]];then
 	fi
 fi
 TIME g "正在比对云端固件和本地安装固件版本..."
-export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | select_latest_firmware)"
+export CLOUD_Firmware="$(egrep -o "${Egrep_Firmware_Regex}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+${Firmware_SFX}" "${Download_Tags}" | select_latest_firmware)"
 export CLOUD_sion="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+")"
 export CLOUD_Version="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFAULT_Device}-[0-9]+${BOOT_Type}")"
 [[ -z "${CLOUD_Version}" ]] && {
@@ -401,7 +426,7 @@ export CLOUD_Version="$(echo "${CLOUD_Firmware}" | egrep -o "${REPO_Name}-${DEFA
 	mv -f "${VERSION_TAGS_TMP}" /tmp/Version_Tags || exit 1
 	exit 0
 }
-export Firmware_Name="$(echo "${CLOUD_Firmware}" | egrep -o "${Egrep_Firmware}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"
+export Firmware_Name="$(echo "${CLOUD_Firmware}" | egrep -o "${Egrep_Firmware_Regex}-[0-9]+${BOOT_Type}-[a-zA-Z0-9]+")"
 export Firmware="${CLOUD_Firmware}"
 # 2026-10-31(O5): 资产名来自 release JSON, 后面会参与 wget -O / md5sum / chmod / sysupgrade。
 # egrep 已经限制了字符集, 这里再做一次显式白名单: 不在本固件命名空间, 或含 . / 之外字符, 直接中止。
@@ -421,15 +446,27 @@ fi
 # 2026-10-27: 原来用 grep -n "${Firmware}" 取最后一行再回退 4 行, 按位置猜体积。
 # GitHub API 给每个资产加了 "digest" 字段后资产在 JSON 里的行数变了: tail -1 命中
 # 下载地址行, X-4 落到 "digest" 行 -> 体积恒为 0, 空间检查形同虚设(日志还打印 0M)。
+# 2026-11-02(O29/O30): 体积和 /tmp 空间检查必须 fail closed。缺 jq、API 没给出数字
+# 或数值 <=0 时都不能当作"未知"跳过检查; TMP_Available 解析失败同样中止。
+if ! command -v jq >/dev/null 2>&1; then
+	TIME r "系统缺少 jq, 无法解析固件体积, 已中止!"
+	echo
+	exit 1
+fi
 CLOUD_Firmware_Size="$(jq -r --arg n "${Firmware}" '[.assets[]|select(.name==$n)|.size][0]' "${Download_Tags}" 2>/dev/null)"
-[[ "${CLOUD_Firmware_Size}" =~ ^[0-9]+$ ]] || CLOUD_Firmware_Size=0
-if [[ "${CLOUD_Firmware_Size}" -gt 0 ]]; then
-	CLOUD_Firmware_Size=$(( (CLOUD_Firmware_Size + 1048575) / 1048576 ))
-	# 2026-10-31(O11): 升级前还要 sysupgrade -b 写备份; keep.d 里含 36MB 的
-	# /usr/bin/AdGuardHome, 旧检查只算镜像大小。多留 64MB, 避免下载完才发现备份写不下。
-	CLOUD_Firmware_Size=$(( CLOUD_Firmware_Size + 64 ))
-else
-	TIME g "未能从 API 取得固件体积, 跳过 tmp 空间检查"
+if ! [[ "${CLOUD_Firmware_Size}" =~ ^[0-9]+$ ]] || [[ "${CLOUD_Firmware_Size}" -le 0 ]]; then
+	TIME r "无法从 API 取得有效固件体积(值: ${CLOUD_Firmware_Size:-空}), 已中止!"
+	echo
+	exit 1
+fi
+CLOUD_Firmware_Size=$(( (CLOUD_Firmware_Size + 1048575) / 1048576 ))
+# 2026-10-31(O11): 升级前还要 sysupgrade -b 写备份; keep.d 里含 36MB 的
+# /usr/bin/AdGuardHome, 旧检查只算镜像大小。多留 64MB, 避免下载完才发现备份写不下。
+CLOUD_Firmware_Size=$(( CLOUD_Firmware_Size + 64 ))
+if ! [[ "${TMP_Available}" =~ ^[0-9]+$ ]]; then
+	TIME r "无法获取 /tmp 可用空间(值: ${TMP_Available:-空}), 已中止!"
+	echo
+	exit 1
 fi
 echo -e "\n本地版本：${CURRENT_Ver}"
 echo "云端版本：${CLOUD_Version}"
@@ -496,18 +533,20 @@ echo "固件名称：${Firmware}"
 echo "下载保存：${Download_Path}"
 echo "固件体积：${CLOUD_Firmware_Size}M"
 cd "${Download_Path}"
-# 2026-10-24: 原来整段下载被 `Installed_PKG_List =~ curl` 门控且没有 else ——
+# 2026-10-24: 原来整段下载被包清单里的 curl 检查门控且没有 else ——
 # 精简配置里去掉 OpenClash 后 curl 不存在, 就完全不下固件, 随后在 .sha256 那一步报"未取得清单"。
 # 改成无条件下载; curl 只用来判断是否处于代理环境, 仅影响提示文案。
+# 2026-11-02(O8): 不再跳过 TLS 证书校验; 设备 CA 验证 HTTPS, 固件来源再由下面的
+# 完整 .sha256 + Ed25519 签名(内置公钥)确认。
 export Google_Check="$(command -v curl >/dev/null 2>&1 && curl -I -s --connect-timeout 8 google.com -w %{http_code} | tail -n1)"
 if [ "${Google_Check}" = "301" ]; then
 	TIME g "检测到代理环境, 正在下载云端固件,请耐心等待..."
 else
 	TIME g "正在下载云端固件,请耐心等待..."
 fi
-wget -q --no-check-certificate --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O "${Firmware}"
+wget -q --timeout=30 --tries=1 "${Github_Release}/${Firmware}" -O "${Firmware}"
 if [[ $? -ne 0 ]];then
-	wget -q --no-check-certificate --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O "${Firmware}"
+	wget -q --timeout=60 --tries=3 "${Github_Release}/${Firmware}" -O "${Firmware}"
 	if [[ $? -ne 0 ]];then
 		TIME r "下载云端固件失败,请尝试手动安装!"
 		echo
@@ -518,8 +557,8 @@ TIME y "下载云端固件成功!"
 # 2026-10-09: 若发布里附带 <固件>.sha256 清单, 先用完整 SHA256 校验固件
 # (下面基于"文件名 12 位片段"的校验只能防传输损坏: 文件与文件名一起被换就失效)
 SideCar="${Firmware}.sha256"
-# 2026-10-24: 与包内 /usr/bin/AutoUpdate 行为对齐, 缺 --no-check-certificate 时设备 CA 旧/时钟不准会直接失败
-if ! wget -q --no-check-certificate --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null || [ ! -s "${Download_Path}/${SideCar}" ]; then
+# 2026-11-02(O8): 校验清单同样走 CA 验证; 签名信任根仍是固件内置的 /etc/firmware-signing.pub。
+if ! wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}" -O "${Download_Path}/${SideCar}" 2>/dev/null || [ ! -s "${Download_Path}/${SideCar}" ]; then
 	TIME r "未取得 ${SideCar},无法校验固件完整性,已中止!"
 	TIME z "请确认该发布已附带 ${SideCar} 校验清单,不要跳过校验刷机"
 	echo
@@ -565,7 +604,7 @@ if [ ! -s "${SIGN_PUB}" ]; then
 	echo
 	exit 1
 fi
-if ! wget -q --no-check-certificate --timeout=15 --tries=1 "${Github_Release}/${SideCar}.sig" -O "${SIGN_FILE}" 2>/dev/null || [ ! -s "${SIGN_FILE}" ]; then
+if ! wget -q --timeout=15 --tries=1 "${Github_Release}/${SideCar}.sig" -O "${SIGN_FILE}" 2>/dev/null || [ ! -s "${SIGN_FILE}" ]; then
 	TIME r "未取得 ${SideCar}.sig, 该发布未签名, 已中止!"
 	TIME z "无签名发布无法确认来源(可能是旧版本, 也可能已被替换), 需要升级请手动刷机"
 	echo
@@ -578,6 +617,9 @@ if ! openssl pkeyutl -verify -pubin -inkey "${SIGN_PUB}" -rawin -in "${Download_
 fi
 TIME g "固件签名校验通过"
 
+# 2026-11-02(O24): 下面只比对文件名里的 4 位 MD5 / 8 位 SHA256 片段, 仅用于发现下载损坏
+# 或文件名与内容不匹配; 真正的完整性/来源由上面的完整 .sha256 + Ed25519 签名决定
+# (这里没有 CLOUD_MD256 之类的完整摘要变量)。
 export CLOUD_MD5=$(md5sum "${Firmware}" | cut -c1-4)
 export CLOUD_256=$(sha256sum "${Firmware}" | cut -c4-11)
 export MD5_256=$(echo ${Firmware} | egrep -o "[a-zA-Z0-9]+${Firmware_SFX}" | sed -r "s/(.*)${Firmware_SFX}/\1/")
@@ -600,13 +642,24 @@ TIME g "准备更新固件,更新期间请不要断开电源或重启设备 ..."
 	exit 0
 }
 sleep 2
+# 2026-10-30: 正常升级先做兼容性检查; 只有显式 -f/-s 的强制路径才跳过。
+# 2026-11-02(O28): 检查放在 sysupgrade -b 之前, 避免备份写完才发现镜像不兼容;
+# 固件下载/校验仍在这之前完成。
+case "${Upgrade_Options}" in
+	*" -F"*) : ;;
+	*)
+		if ! sysupgrade -T "${Firmware}"; then
+			echo "镜像兼容性检查失败(sysupgrade -T), 已中止; 如确认强制刷机请手动执行 sysupgrade -F" >&2
+			exit 1
+		fi
+		;;
+esac
 TIME g "正在更新固件,请耐心等待 ..."
-# 2026-10-22: 原来这里会 `opkg remove gzip` 再升级。但 busybox tar 的 -z 是调用外部 gzip
+# 2026-10-22: 原来这里会在升级前移除 gzip 包。但 busybox tar 的 -z 是调用外部 gzip
 # 二进制实现的(设备实测 PATH=/nonexistent busybox tar -czf x → "can't execute 'gzip'"),
 # 而下一条 sysupgrade -b 内部就是 tar czf → 删掉 gzip 会让备份失败、退化成不保留配置升级。
 # 镜像解压走 get_image 的 busybox zcat, 不需要外部 gzip, 所以这一步直接去掉。
-# [[ "$(cat ${PKG_List})" =~ gzip ]] && opkg remove gzip > /dev/null 2>&1
-if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
+if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]] || [[ "${Force_Update}" == 1 ]]; then
 	# 2026-10-23: /etc/deletefile 由 $DELETE 控制, 只有 Lienol/Mortal 的 diy-part.sh 会写,
 	# Lede 分支从来不生成。原来裸 source 一个不存在的文件在 ash 下会直接退出(rc=2),
 	# 等于手动升级通道在某些 shell 下静默失败; 加 [ -f ] 守卫, 存在才 source。
@@ -620,26 +673,20 @@ if [[ "${AutoUpdate_Mode}" == 1 ]] || [[ "${Update_Mode}" == 1 ]]; then
 	#   备份文件也从 /mnt 挪到 /tmp: /mnt 就在 overlay 上, 和被升级的系统同一块盘, 掉电必一起丢;
 	#   sysupgrade 会把这份 tar 复制进新系统, 不依赖重启后它还在。
 	#   原来失败兜底写的是 sysupgrade -q, 注释还说是"不保留配置" —— -q 只是静默, -n 才不保留配置。
-	#   这里改成裸 sysupgrade: 备份都做不出来时, 让 sysupgrade 用自己的自动备份并如实报错,
+	#   现在备份失败时恢复原选项, 让 sysupgrade 用自己的自动备份并如实报错,
 	#   而不是假装配置已经被保住了。
+	# 2026-11-02(O6/O23): -s 仍执行 sysupgrade -F -n, 但也要先做备份; 成功后把 -f <备份>
+	# 追加到原选项(-F/-n/-q 不丢失), 备份失败则恢复原选项而不是裸 sysupgrade。
+	ORIG_Upgrade_Options="${Upgrade_Options}"
 	if ( umask 077; sysupgrade -b "${Download_Path}/back.tar.gz" ); then
 		chmod 600 "${Download_Path}/back.tar.gz" 2>/dev/null || true
-		export Upgrade_Options="sysupgrade -f ${Download_Path}/back.tar.gz"
+		export Upgrade_Options="${ORIG_Upgrade_Options} -f ${Download_Path}/back.tar.gz"
 	else
-		export Upgrade_Options="sysupgrade"
+		export Upgrade_Options="${ORIG_Upgrade_Options}"
 	fi
+	unset ORIG_Upgrade_Options
 fi
 
-# 2026-10-30: 正常升级先做兼容性检查; 只有显式 -f/-s 的强制路径才跳过。
-case "${Upgrade_Options}" in
-	*" -F"*) : ;;
-	*)
-		if ! sysupgrade -T "${Firmware}"; then
-			echo "镜像兼容性检查失败(sysupgrade -T), 已中止; 如确认强制刷机请手动执行 sysupgrade -F" >&2
-			exit 1
-		fi
-		;;
-esac
 # 2026-10-30: 传递 sysupgrade 的真实退出码; 原来无论成功失败都 exit 0,
 # 定时任务/上层界面会把失败当成功。
 ${Upgrade_Options} "${Firmware}"
