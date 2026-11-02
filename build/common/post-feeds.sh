@@ -573,7 +573,7 @@ if ! grep -q 'zzz_api 主备对调' "$AU_BIN"; then
 fi
 grep -q 'zzz_api 主备对调' "$AU_BIN" || { echo "!! zzz_api 主备对调没打上(上游脚本改了?)"; exit 1; }
 # 断言替换后变量没被吃掉(踩过: perl 插值把 \$RELEASE_DOWNLOAD1 变成空串)
-grep -q 'wget -q --no-check-certificate --no-use-server-timestamps --timeout=40 -t 1 "\$RELEASE_DOWNLOAD1/zzz_api" -O "\$tmpapi_version"' "$AU_BIN" \
+grep -q 'wget -q .*--no-use-server-timestamps --timeout=40 -t 1 "\$RELEASE_DOWNLOAD1/zzz_api" -O "\$tmpapi_version"' "$AU_BIN" \
   || { echo "!! zzz_api 主备对调后变量被吞(perl 插值?), 下载地址会变成 /zzz_api"; exit 1; }
 echo "== zzz_api 下载改为 wget 优先 =="
 
