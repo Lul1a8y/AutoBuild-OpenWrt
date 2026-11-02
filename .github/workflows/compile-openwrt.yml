@@ -562,6 +562,10 @@ jobs:
           esac
           printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
         }
+        require() {
+          local name="$1" value="${2:-}"
+          [ -n "$value" ] || { echo "::error::可信元数据 ${name} 为空"; exit 1; }
+        }
         # 2026-11-01: REGULAR_UPDATE 在「编译信息」之后采集, 允许 nanopi/armvirt
         # 的 OTA 目标适配覆盖; 这是唯一合法的发布开关覆盖点。
         emit regular_update "${REGULAR_UPDATE:-}"
@@ -584,10 +588,19 @@ jobs:
         emit firmware_ver "${FIRMWARE_VER:-}"
         emit path1 "${PATH1:-}"
         emit home "${Home:-}"
-        for name in regular_update has_repo_token code openwrt_name target_profile compile_date date date1 firmware_ver path1 home; do
-          eval "value=\${$name:-}"
-          [ -n "$value" ] || { echo "::error::可信元数据 ${name} 为空"; exit 1; }
-        done
+        # 校验真实 shell 变量, 不是输出名。之前用输出名 eval, $regular_update
+        # 永远不存在, 第一次循环就会误报为空。
+        require regular_update "${REGULAR_UPDATE:-}"
+        require has_repo_token "${HAS_REPO_TOKEN:-}"
+        require code "${CODE:-}"
+        require openwrt_name "${OpenWrt_name:-}"
+        require target_profile "${TARGET_PROFILE:-}"
+        require compile_date "${Compile_Date:-}"
+        require date "${date:-}"
+        require date1 "${date1:-}"
+        require firmware_ver "${FIRMWARE_VER:-}"
+        require path1 "${PATH1:-}"
+        require home "${Home:-}"
         # 契约: BUILD_SOURCE.txt / SOURCE_LOCK.txt 必须在进入本步骤前最终定稿。
         # 本步骤之后、恢复步骤校验前, 任何步骤都不得再追加或改写这两个文件, 否则
         # 仓库指纹会误报, 恢复步骤会直接失败。
