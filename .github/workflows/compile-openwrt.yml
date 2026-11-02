@@ -638,7 +638,9 @@ jobs:
               grep -E '^REPO_(URL|BRANCH)=' "${SRC_DIR}/settings.ini" 2>/dev/null || true
               [ -f "${OPENWRT}/rules.mk" ] && sha256sum "${OPENWRT}/rules.mk"
               find "${OPENWRT}/include/toolchain" -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
-              find "${OPENWRT}/toolchain" -maxdepth 2 -type f -name 'Config*' -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
+              # 2026-11-02: 整个 toolchain 递归哈希, 覆盖 patches/Makefile/build_version;
+              # 只哈希 Config* 会漏掉补丁更新但版本号不变的场景, 导致复用旧工具链。
+              find "${OPENWRT}/toolchain" -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
               find "${OPENWRT}/target/linux" -mindepth 2 -maxdepth 2 -name Makefile -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
             } | sha256sum | awk '{print $1}'
           )"
