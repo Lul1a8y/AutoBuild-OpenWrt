@@ -1631,7 +1631,6 @@ jobs:
       contents: read
     steps:
       - name: 删除旧缓存
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1642,16 +1641,18 @@ jobs:
           CFG="$(mktemp)"
           LIST="$(mktemp)"
           RAW="$(mktemp)"
+          VERIFY_RAW="$(mktemp)"
+          VERIFY_LIST="$(mktemp)"
           umask 077
-          trap 'rm -f "$CFG" "$LIST" "$RAW"' EXIT
+          trap 'rm -f "$CFG" "$LIST" "$RAW" "$VERIFY_RAW" "$VERIFY_LIST"' EXIT
           printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$GH_TOKEN" > "$CFG"
           page=1
           while :; do
             PAGE="$(mktemp)"
             if ! curl -fsSL --retry 3 --retry-delay 2 --config "$CFG" "${API}?per_page=100&page=${page}" -o "$PAGE"; then
-              echo "::warning::缓存列表获取失败, 跳过清理"
+              echo "::error::缓存列表获取失败, 无法清理"
               rm -f "$PAGE"
-              exit 0
+              exit 1
             fi
             count="$(jq '.actions_caches | length' "$PAGE")"
             jq -c '.actions_caches[]' "$PAGE" >> "$RAW"
@@ -1661,24 +1662,25 @@ jobs:
           done
           jq -s '{actions_caches: .}' "$RAW" > "$LIST"
           delete_cache() {
-            local id="$1" code attempt
-            for attempt in 1 2 3 4; do
+            local id="$1" code attempt delay
+            for attempt in 1 2 3; do
               code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE --config "$CFG" "${API}/${id}")"
               case "$code" in
                 204|404) return 0 ;;
-                401|403|429)
-                  echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 跳过"; return 0 ;;
-                5??)
-                  # GitHub cache DELETE 偶发 500; 手动立即重试通常成功。
-                  if [ "$attempt" -lt 4 ]; then
-                    echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 第 ${attempt} 次重试"
-                    sleep $((attempt * 2))
+                401|403)
+                  echo "::error::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
+                429|5??)
+                  # GitHub cache DELETE 偶发 429/500; 退避重试, 不静默成功。
+                  if [ "$attempt" -lt 3 ]; then
+                    if [ "$attempt" -eq 1 ]; then delay=5; else delay=15; fi
+                    echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 第 ${attempt} 次重试 (${delay}s)"
+                    sleep "$delay"
                     continue
                   fi
-                  echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 重试 4 次后跳过"
-                  return 0 ;;
+                  echo "::error::删除缓存 ${id} 返回 HTTP ${code}, 重试 3 次后仍失败"
+                  return 1 ;;
                 *)
-                  echo "::warning::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
+                  echo "::error::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
               esac
             done
           }
@@ -1709,3 +1711,42 @@ jobs:
             | select((.key|test("-openwrt-v4-dl-|-openwrt-v4-tool-|-ccache-"))|not)
             | [.id,.key] | @tsv
           ' "$LIST")
+
+          # 2026-11-02: 删除后重新拉取并验证, 不能只看 DELETE 的 HTTP code。
+          sleep 2
+          : > "$VERIFY_RAW"
+          page=1
+          while :; do
+            PAGE="$(mktemp)"
+            if ! curl -fsSL --retry 3 --retry-delay 2 --config "$CFG" "${API}?per_page=100&page=${page}" -o "$PAGE"; then
+              echo "::error::缓存清理后无法读取缓存列表"
+              rm -f "$PAGE"
+              exit 1
+            fi
+            count="$(jq '.actions_caches | length' "$PAGE")"
+            jq -c '.actions_caches[]' "$PAGE" >> "$VERIFY_RAW"
+            rm -f "$PAGE"
+            [ "$count" -lt 100 ] && break
+            page=$((page + 1))
+          done
+          jq -s '{actions_caches: .}' "$VERIFY_RAW" > "$VERIFY_LIST"
+
+          for kind in dl tool ccache; do
+            case "$kind" in
+              ccache) prefix="${PREFIX}ccache-" ;;
+              *) prefix="${PREFIX}openwrt-v4-${kind}-" ;;
+            esac
+            remaining="$(jq --arg p "$prefix" '[.actions_caches[] | select(.key|startswith($p))] | length' "$VERIFY_LIST")"
+            if [ "$remaining" -gt 1 ]; then
+              echo "::error::缓存清理后 ${kind} 仍有 ${remaining} 条"
+              jq -r --arg p "$prefix" '.actions_caches[] | select(.key|startswith($p)) | .key' "$VERIFY_LIST" >&2
+              exit 1
+            fi
+          done
+          legacy="$(jq --arg p "$PREFIX" '[.actions_caches[] | select(.key|startswith($p)) | select((.key|test("-openwrt-v4-dl-|-openwrt-v4-tool-|-ccache-"))|not)] | length' "$VERIFY_LIST")"
+          if [ "$legacy" -gt 0 ]; then
+            echo "::error::缓存清理后仍有 ${legacy} 条遗留缓存"
+            jq -r --arg p "$PREFIX" '.actions_caches[] | select(.key|startswith($p)) | select((.key|test("-openwrt-v4-dl-|-openwrt-v4-tool-|-ccache-"))|not) | .key' "$VERIFY_LIST" >&2
+            exit 1
+          fi
+          echo "== 缓存清理验证通过: dl/tool/ccache 各保留最新一条 =="
