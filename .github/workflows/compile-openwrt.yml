@@ -1661,13 +1661,26 @@ jobs:
           done
           jq -s '{actions_caches: .}' "$RAW" > "$LIST"
           delete_cache() {
-            local id="$1" code
-            code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE --config "$CFG" "${API}/${id}")"
-            case "$code" in
-              204|404) ;;
-              401|403|429|5??) echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 跳过"; return 0 ;;
-              *) echo "::warning::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
-            esac
+            local id="$1" code attempt
+            for attempt in 1 2 3 4; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE --config "$CFG" "${API}/${id}")"
+              case "$code" in
+                204|404) return 0 ;;
+                401|403|429)
+                  echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 跳过"; return 0 ;;
+                5??)
+                  # GitHub cache DELETE 偶发 500; 手动立即重试通常成功。
+                  if [ "$attempt" -lt 4 ]; then
+                    echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 第 ${attempt} 次重试"
+                    sleep $((attempt * 2))
+                    continue
+                  fi
+                  echo "::warning::删除缓存 ${id} 返回 HTTP ${code}, 重试 4 次后跳过"
+                  return 0 ;;
+                *)
+                  echo "::warning::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
+              esac
+            done
           }
           for kind in dl tool ccache; do
             case "$kind" in
