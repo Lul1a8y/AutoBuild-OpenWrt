@@ -1,7 +1,6 @@
 # This file is interpreted as a shell script.
 # Custom commands run after the default rules on every firewall restart.
-# The inet fw4 table is recreated on reload, this one is not.
-
+#
 # 2026-10-21: 把 LAN 的 53 统一劫持到 AdGuardHome(5553)。
 # 目的: 在 ADH 的查询日志里看到真实客户端 IP —— 若客户端经 dnsmasq 转发,
 # ADH 只会看到源地址 127.0.0.1, 无法区分是哪台设备在查什么。
@@ -12,40 +11,35 @@
 # 不再判断 AGH 核心/进程/端口；不使用 AdGuardHome 的人直接删除本文件里的规则
 # （或把本文件替换成空文件），不要让 53 指向不存在的 5553。
 #
-# 写法说明: 本文件在每次 fw4 reload 都会被执行一遍。裸 `iptables -A` 会让规则
-# 一份份叠加(2026-10-21 现场已叠到 3 份, 只有第一份收包, 其余纯占位),
-# 所以这里用「先删干净再加一条」, 重复执行结果恒定。
-# 2026-10-23: 加 -i br-lan。原写法不限入接口, WAN 侧到 53 的包也会被 DNAT 到
-# 5553, 计数器里混着公网扫描流量(实测 udp 2451 个包里大部分来自 WAN), 既污染统计,
-# 也让 "劫持的是 LAN 客户端" 这个前提在报文层面不成立。加 -i br-lan 后语义与注释一致。
+# 2026-11-03: fw4 使用 nftables。inet fw4 表在每次 reload 时会重建，
+# 所以这里每次执行都幂等地补回 4 条 nft 规则（IPv4/IPv6 × UDP/TCP）。
+# 同时清掉旧版本由 iptables/ip6tables 写入的 53 重定向，避免两套规则并存
+# 触发 LuCI 的 “检测到旧版规则” 警告。
 
-redirect_dns() {
-	_ipt="$1"
-	for _p in udp tcp; do
-		while "$_ipt" -t nat -C PREROUTING -i br-lan -p "$_p" \
-			--dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
-			"$_ipt" -t nat -D PREROUTING -i br-lan -p "$_p" \
-				--dport 53 -j REDIRECT --to-ports 5553 || break
+# 迁移清理: 旧镜像曾用 iptables/ip6tables -t nat REDIRECT 5553。
+for _ipt in iptables ip6tables; do
+	command -v "$_ipt" >/dev/null 2>&1 || continue
+	for _proto in udp tcp; do
+		while "$_ipt" -t nat -C PREROUTING -i br-lan -p "$_proto" --dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
+			"$_ipt" -t nat -D PREROUTING -i br-lan -p "$_proto" --dport 53 -j REDIRECT --to-ports 5553 2>/dev/null || break
 		done
-		if ! "$_ipt" -t nat -A PREROUTING -i br-lan -p "$_p" \
-			--dport 53 -j REDIRECT --to-ports 5553; then
-			logger -t firewall.user "DNS redirect add failed: $_ipt $_p" 2>/dev/null || true
+	done
+done
+unset _ipt _proto
+
+# nftables: comment 不能含空格，否则 nft CLI 会把 "ADH DNS ..." 拆成多个 token。
+for _nfproto in ipv4 ipv6; do
+	for _proto in udp tcp; do
+		_comment="ADH-DNS-${_nfproto}-${_proto}"
+		if ! nft list chain inet fw4 dstnat 2>/dev/null | grep -qF "$_comment"; then
+			nft insert rule inet fw4 dstnat \
+				meta nfproto "$_nfproto" \
+				iifname "br-lan" \
+				"$_proto" dport 53 \
+				redirect to :5553 \
+				comment "$_comment" 2>/dev/null || \
+				logger -t firewall.user "添加 ADH DNS nft 规则失败: ${_comment}" 2>/dev/null || true
 		fi
 	done
-}
-
-# IPv4
-redirect_dns iptables
-
-# IPv6：先确认 ip6tables 和 nat 表可用，避免 IPv6 关闭时刷错误日志
-if command -v ip6tables >/dev/null 2>&1; then
-	[ -x /sbin/modprobe ] && /sbin/modprobe ip6table_nat 2>/dev/null || true
-	if ip6tables -t nat -L PREROUTING -n >/dev/null 2>&1; then
-		redirect_dns ip6tables
-	else
-		# 2026-10-29: 缺 ip6table_nat 时不能静默跳过, 否则 v6 客户端会绕过 ADH。
-		logger -t firewall.user "IPv6 DNS redirect skipped: ip6tables nat table unavailable" 2>/dev/null || true
-	fi
-fi
-
-unset _ipt _p
+done
+unset _nfproto _proto _comment
