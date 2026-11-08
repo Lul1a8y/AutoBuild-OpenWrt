@@ -205,13 +205,19 @@ LEGACY6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--t
 if pidof AdGuardHome >/dev/null 2>&1; then
   if [ "$N53" -eq 4 ]; then
     ok "LAN IPv4/IPv6 nft 53→5553 劫持规则 4 条存在"
+  elif [ "$N53" -eq 0 ] && [ -n "$LEGACY4$LEGACY6" ]; then
+    warn "AGH 在跑但仍由 legacy iptables/ip6tables 劫持(nft=0)，DNS 可用但建议重启/firewall reload 完成迁移"
   elif [ "$INCLUDE_OK" -ne 1 ]; then
     warn "AGH 在跑但 firewall.user include 未启用，nft 53→5553 规则 ${N53}/4（先装核心后加 include 的中间态）"
   else
     bad "AGH 在跑且 include 已启用，但 nft 53→5553 规则数为 ${N53}，应为 4"
   fi
 else
-  [ "$N53" -eq 0 ] && ok "AGH 未运行且无 nft DNS 重定向" || bad "AGH 未运行但仍有 ${N53} 条 nft DNS 重定向(客户端可能断 DNS)"
+  if [ "$N53" -ne 0 ] || [ -n "$LEGACY4$LEGACY6" ]; then
+    bad "AGH 未运行但仍有 DNS 重定向 (nft=${N53}, legacy 非空)，客户端可能断 DNS"
+  else
+    ok "AGH 未运行且无 nft/legacy DNS 重定向"
+  fi
 fi
 [ -z "$LEGACY4$LEGACY6" ] && ok "无遗留 iptables/ip6tables 5553 重定向" || warn "仍有遗留 iptables/ip6tables 5553 重定向(LuCI 可能报旧版规则)"
 ADH_REDIRECT="$(uci -q get AdGuardHome.AdGuardHome.redirect 2>/dev/null)"
