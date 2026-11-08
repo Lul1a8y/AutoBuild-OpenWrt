@@ -15,7 +15,8 @@
 # 2026-11-08: 改用 fw4/nftables，并改成“先加 nft，再清旧 iptables”。
 # 原因: 本文件在每次 fw4 reload 都会执行；若先删旧规则、后加 nft,
 # nft 失败时会出现“旧规则已删、新规则没加”的空窗。现在任一 nft 失败
-# 都会 exit 1，让 fw4 reload 明确失败；只有 4 条 nft 规则确认存在后，
+# 都会 exit 1；注意 fw4 的 run_includes 只会记录 warning 并继续，不会让 reload 返回失败，
+# 但会终止本脚本，避免继续清理旧规则。只有 4 条 nft 规则确认存在后，
 # 才清理历史遗留的 iptables/ip6tables REDIRECT。
 # 不使用带空格的 comment：nft CLI 会重新拆分参数，导致 command line 语法错误。
 #
@@ -47,7 +48,7 @@ for nfproto in ipv4 ipv6; do
 done
 
 # 4 条 nft 规则必须全部存在；缺一条就失败，不能静默通过。
-nft_count="$(nft list chain inet fw4 dstnat 2>/dev/null | grep -c 'redirect to :5553' || true)"
+nft_count="$(nft list chain inet fw4 dstnat 2>/dev/null | grep -c 'ADH-DNS-' || true)"
 if [ "${nft_count:-0}" -ne 4 ]; then
 	logger -t firewall.user "expected 4 nft DNS redirects, found ${nft_count:-0}"
 	exit 1

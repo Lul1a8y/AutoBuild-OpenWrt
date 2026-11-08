@@ -192,16 +192,24 @@ blk="$(lsblk 2>/dev/null | head -5)"
 
 # ---------- 11. 配置一致性 / 暴露面 ----------
 head2 "11. 配置一致性 / 暴露面"
+INCLUDE_OK=0
 if uci -q show firewall 2>/dev/null | grep -q "path='/etc/firewall.user'"; then
   ok "firewall.user 的 fw4 include 存在"
+  INCLUDE_OK=1
 else
   warn "firewall.user 的 fw4 include 不存在(新刷机 DNS 劫持不会生效)"
 fi
-N53="$(nft list chain inet fw4 dstnat 2>/dev/null | grep -c 'redirect to :5553' || true)"
-LEGACY4="$(iptables -t nat -S PREROUTING 2>/dev/null | grep -- '--to-ports 5553' || true)"
-LEGACY6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--to-ports 5553' || true)"
+N53="$(nft list chain inet fw4 dstnat 2>/dev/null | grep -c 'ADH-DNS-' || true)"
+LEGACY4="$(iptables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
+LEGACY6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
 if pidof AdGuardHome >/dev/null 2>&1; then
-  [ "$N53" -eq 4 ] && ok "LAN IPv4/IPv6 nft 53→5553 劫持规则 4 条存在" || bad "AGH 在跑但 nft 53→5553 规则数为 ${N53}，应为 4"
+  if [ "$N53" -eq 4 ]; then
+    ok "LAN IPv4/IPv6 nft 53→5553 劫持规则 4 条存在"
+  elif [ "$INCLUDE_OK" -ne 1 ]; then
+    warn "AGH 在跑但 firewall.user include 未启用，nft 53→5553 规则 ${N53}/4（先装核心后加 include 的中间态）"
+  else
+    bad "AGH 在跑且 include 已启用，但 nft 53→5553 规则数为 ${N53}，应为 4"
+  fi
 else
   [ "$N53" -eq 0 ] && ok "AGH 未运行且无 nft DNS 重定向" || bad "AGH 未运行但仍有 ${N53} 条 nft DNS 重定向(客户端可能断 DNS)"
 fi
