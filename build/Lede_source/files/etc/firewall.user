@@ -1,3 +1,4 @@
+#!/bin/sh
 # This file is interpreted as a shell script.
 # Custom commands run after the default rules on every firewall restart.
 #
@@ -11,35 +12,57 @@
 # 不再判断 AGH 核心/进程/端口；不使用 AdGuardHome 的人直接删除本文件里的规则
 # （或把本文件替换成空文件），不要让 53 指向不存在的 5553。
 #
-# 2026-11-03: fw4 使用 nftables。inet fw4 表在每次 reload 时会重建，
-# 所以这里每次执行都幂等地补回 4 条 nft 规则（IPv4/IPv6 × UDP/TCP）。
-# 同时清掉旧版本由 iptables/ip6tables 写入的 53 重定向，避免两套规则并存
-# 触发 LuCI 的 “检测到旧版规则” 警告。
+# 2026-11-08: 改用 fw4/nftables，并改成“先加 nft，再清旧 iptables”。
+# 原因: 本文件在每次 fw4 reload 都会执行；若先删旧规则、后加 nft,
+# nft 失败时会出现“旧规则已删、新规则没加”的空窗。现在任一 nft 失败
+# 都会 exit 1，让 fw4 reload 明确失败；只有 4 条 nft 规则确认存在后，
+# 才清理历史遗留的 iptables/ip6tables REDIRECT。
+# 不使用带空格的 comment：nft CLI 会重新拆分参数，导致 command line 语法错误。
+#
+# 写法说明: 裸 nft insert 会叠加；这里先 grep 同 comment 的规则，重复执行
+# 结果恒定。fw4 reload 会重建 inet fw4 表，本脚本负责把 4 条规则重新加回。
 
-# 迁移清理: 旧镜像曾用 iptables/ip6tables -t nat REDIRECT 5553。
-for _ipt in iptables ip6tables; do
-	command -v "$_ipt" >/dev/null 2>&1 || continue
-	for _proto in udp tcp; do
-		while "$_ipt" -t nat -C PREROUTING -i br-lan -p "$_proto" --dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
-			"$_ipt" -t nat -D PREROUTING -i br-lan -p "$_proto" --dport 53 -j REDIRECT --to-ports 5553 2>/dev/null || break
+add_nft_dns_redirect() {
+	nfproto="$1"
+	proto="$2"
+	comment="ADH-DNS-${nfproto}-${proto}"
+
+	if ! nft list chain inet fw4 dstnat 2>/dev/null | grep -qF "$comment"; then
+		if ! nft insert rule inet fw4 dstnat \
+			meta nfproto "$nfproto" \
+			iifname "br-lan" \
+			"$proto" dport 53 \
+			redirect to :5553 \
+			comment "$comment"; then
+			logger -t firewall.user "failed to add nft DNS redirect ${comment}"
+			exit 1
+		fi
+	fi
+}
+
+for nfproto in ipv4 ipv6; do
+	for proto in udp tcp; do
+		add_nft_dns_redirect "$nfproto" "$proto"
+	done
+done
+
+# 4 条 nft 规则必须全部存在；缺一条就失败，不能静默通过。
+nft_count="$(nft list chain inet fw4 dstnat 2>/dev/null | grep -c 'redirect to :5553' || true)"
+if [ "${nft_count:-0}" -ne 4 ]; then
+	logger -t firewall.user "expected 4 nft DNS redirects, found ${nft_count:-0}"
+	exit 1
+fi
+
+# 清理旧版 iptables/ip6tables 规则。它们不会被 fw4 reload 自动清掉。
+for ipt in iptables ip6tables; do
+	command -v "$ipt" >/dev/null 2>&1 || continue
+	for proto in udp tcp; do
+		while "$ipt" -t nat -C PREROUTING -i br-lan -p "$proto" \
+			--dport 53 -j REDIRECT --to-ports 5553 2>/dev/null; do
+			"$ipt" -t nat -D PREROUTING -i br-lan -p "$proto" \
+				--dport 53 -j REDIRECT --to-ports 5553 2>/dev/null || break
 		done
 	done
 done
-unset _ipt _proto
 
-# nftables: comment 不能含空格，否则 nft CLI 会把 "ADH DNS ..." 拆成多个 token。
-for _nfproto in ipv4 ipv6; do
-	for _proto in udp tcp; do
-		_comment="ADH-DNS-${_nfproto}-${_proto}"
-		if ! nft list chain inet fw4 dstnat 2>/dev/null | grep -qF "$_comment"; then
-			nft insert rule inet fw4 dstnat \
-				meta nfproto "$_nfproto" \
-				iifname "br-lan" \
-				"$_proto" dport 53 \
-				redirect to :5553 \
-				comment "$_comment" 2>/dev/null || \
-				logger -t firewall.user "添加 ADH DNS nft 规则失败: ${_comment}" 2>/dev/null || true
-		fi
-	done
-done
-unset _nfproto _proto _comment
+unset nfproto proto comment ipt nft_count

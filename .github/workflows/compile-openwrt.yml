@@ -1666,12 +1666,12 @@ jobs:
           delete_cache() {
             local id="$1" code attempt delay
             for attempt in 1 2 3; do
-              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE --config "$CFG" "${API}/${id}")"
+              code="$(curl -sS --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' -X DELETE --config "$CFG" "${API}/${id}")" || code=000
               case "$code" in
                 204|404) return 0 ;;
                 401|403)
                   echo "::error::删除缓存 ${id} 返回 HTTP ${code}"; return 1 ;;
-                429|5??)
+                000|429|5??)
                   # GitHub cache DELETE 偶发 429/500; 退避重试, 不静默成功。
                   if [ "$attempt" -lt 3 ]; then
                     if [ "$attempt" -eq 1 ]; then delay=5; else delay=15; fi

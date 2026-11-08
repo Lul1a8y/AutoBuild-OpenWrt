@@ -318,7 +318,7 @@ else
 				# 替换串里的 & 和 \ 也转义, 避免被 sed 当成反向引用。
 				Github_escaped="$(printf '%s' "${Github}" | sed 's/\./\\./g')"
 				Safe_Other="$(printf '%s' "${Input_Other}" | sed 's/[\\&]/\\&/g')"
-				sed -i "s?${Github_escaped}?${Safe_Other}?g" /bin/openwrt_info || {
+				INFO_TMP="$(mktemp /bin/openwrt_info.XXXXXX)" && cp -p /bin/openwrt_info "${INFO_TMP}" && sed -i "s?${Github_escaped}?${Safe_Other}?g" "${INFO_TMP}" && mv -f "${INFO_TMP}" /bin/openwrt_info || {
 					TIME r "/bin/openwrt_info 写入失败, Github 地址未更新"; exit 1
 				}
 				unset Github_escaped Safe_Other

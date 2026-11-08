@@ -197,14 +197,15 @@ if uci -q show firewall 2>/dev/null | grep -q "path='/etc/firewall.user'"; then
 else
   warn "firewall.user 的 fw4 include 不存在(新刷机 DNS 劫持不会生效)"
 fi
-R4="$(iptables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
-R6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53.*--to-ports 5553' || true)"
+N53="$(nft list chain inet fw4 dstnat 2>/dev/null | grep -c 'redirect to :5553' || true)"
+LEGACY4="$(iptables -t nat -S PREROUTING 2>/dev/null | grep -- '--to-ports 5553' || true)"
+LEGACY6="$(ip6tables -t nat -S PREROUTING 2>/dev/null | grep -- '--to-ports 5553' || true)"
 if pidof AdGuardHome >/dev/null 2>&1; then
-  [ -n "$R4" ] && ok "LAN IPv4 53→5553 劫持规则存在" || warn "AGH 在跑但未见 IPv4 53→5553 劫持规则"
-  [ -n "$R6" ] && ok "LAN IPv6 53→5553 劫持规则存在" || warn "AGH 在跑但未见 IPv6 53→5553 劫持规则"
+  [ "$N53" -eq 4 ] && ok "LAN IPv4/IPv6 nft 53→5553 劫持规则 4 条存在" || bad "AGH 在跑但 nft 53→5553 规则数为 ${N53}，应为 4"
 else
-  [ -z "$R4$R6" ] && ok "AGH 未运行且无残留 DNS 重定向" || bad "AGH 未运行但 DNS 重定向仍存在(客户端可能断 DNS)"
+  [ "$N53" -eq 0 ] && ok "AGH 未运行且无 nft DNS 重定向" || bad "AGH 未运行但仍有 ${N53} 条 nft DNS 重定向(客户端可能断 DNS)"
 fi
+[ -z "$LEGACY4$LEGACY6" ] && ok "无遗留 iptables/ip6tables 5553 重定向" || warn "仍有遗留 iptables/ip6tables 5553 重定向(LuCI 可能报旧版规则)"
 ADH_REDIRECT="$(uci -q get AdGuardHome.AdGuardHome.redirect 2>/dev/null)"
 say "  AdGuardHome.redirect=${ADH_REDIRECT:-未配置}"
 for p in 12306 7681 19999; do
